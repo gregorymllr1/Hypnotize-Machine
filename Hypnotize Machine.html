@@ -1315,6 +1315,38 @@ function toggleChopEditor(L){
 }
 function closeChopEditor(){ chopEditor.classList.remove('show'); chopEditorLaneId=null; }
 
+function gridSlices(divisions){ const a=[]; for(let i=0;i<divisions;i++) a.push(i/divisions); return a; }
+
+function detectTransients(data, sampleRate, sensitivity){
+  const hop=Math.max(1,Math.round(sampleRate*0.010));
+  const n=Math.floor(data.length/hop);
+  if(n<2) return [0];
+  const rms=new Float32Array(n);
+  for(let i=0;i<n;i++){ let sum=0; const s=i*hop; for(let j=0;j<hop;j++){ const v=data[s+j]||0; sum+=v*v; } rms[i]=Math.sqrt(sum/hop); }
+  const flux=new Float32Array(n); let mx=0;
+  for(let i=1;i<n;i++){ const d=rms[i]-rms[i-1]; flux[i]=d>0?d:0; if(flux[i]>mx)mx=flux[i]; }
+  if(mx<=0) return [0];
+  const thr=(1-sensitivity)*mx;
+  const minGap=Math.max(1,Math.round(0.050*sampleRate/hop));
+  const out=[0]; let last=-minGap;
+  for(let i=1;i<n-1;i++){
+    if(flux[i]>=thr && flux[i]>=flux[i-1] && flux[i]>=flux[i+1] && (i-last)>=minGap){
+      out.push((i*hop)/data.length); last=i;
+    }
+  }
+  const uniq=[...new Set(out.map(m=>+m.toFixed(5)))].sort((a,b)=>a-b).slice(0,64);
+  if(uniq[0]!==0) uniq.unshift(0);
+  return uniq;
+}
+
+function mapSlicesToSteps(L){
+  const n=Math.min(STEPS,(L.slices||[]).length);
+  for(let s=0;s<STEPS;s++){
+    if(s<n){ L.steps[s].roll=1; L.steps[s].slice=s; }
+    else { L.steps[s].roll=0; L.steps[s].slice=-1; }
+  }
+}
+
 function getPeaks(L,w){
   if(wfCache.id===L.id && wfCache.w===w && wfCache.peaks) return wfCache.peaks;
   const data=L.buffer.getChannelData(0);
@@ -1370,6 +1402,56 @@ function drawChopEditor(){
 }
 
 window.addEventListener('resize',()=>{ if(chopEditor.classList.contains('show')){ wfCache.id=null; drawChopEditor(); } });
+
+const chopModeEl=document.getElementById('chopMode');
+const chopSensEl=document.getElementById('chopSens');
+const chopSensWrap=document.getElementById('chopSensWrap');
+const chopDivEl=document.getElementById('chopDiv');
+chopModeEl.onchange=()=>{
+  const grid=chopModeEl.value==='grid';
+  chopDivEl.style.display=grid?'':'none';
+  chopSensWrap.style.display=grid?'none':'';
+};
+chopSensEl.oninput=()=>{ document.getElementById('chopSensVal').textContent=Math.round(chopSensEl.value*100)+'%'; };
+document.getElementById('chopAuto').onclick=()=>{
+  const L=curChopLane(); if(!L||!L.buffer) return;
+  if(chopModeEl.value==='grid') L.slices=gridSlices(parseInt(chopDivEl.value));
+  else L.slices=detectTransients(L.buffer.getChannelData(0),L.buffer.sampleRate,parseFloat(chopSensEl.value));
+  mapSlicesToSteps(L); drawChopEditor(); rebuildGrid();
+};
+document.getElementById('chopMap').onclick=()=>{ const L=curChopLane(); if(!L) return; mapSlicesToSteps(L); rebuildGrid(); };
+document.getElementById('chopClear').onclick=()=>{ const L=curChopLane(); if(!L) return; L.slices=[0]; L.steps.forEach(st=>{st.slice=-1;}); drawChopEditor(); rebuildGrid(); };
+document.getElementById('chopClose').onclick=closeChopEditor;
+
+let chopDrag=-1;
+function chopCanvasPos(e){ const r=chopCanvas.getBoundingClientRect(); return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)); }
+function chopNearestMarker(L,pos,tolPx){
+  const w=chopCanvas.clientWidth||chopCanvas.width; let best=-1,bd=1e9;
+  (L.slices||[]).forEach((p,i)=>{ const d=Math.abs(p-pos)*w; if(d<bd){bd=d;best=i;} });
+  return bd<=tolPx?best:-1;
+}
+chopCanvas.addEventListener('pointerdown',(e)=>{
+  const L=curChopLane(); if(!L||!L.buffer) return;
+  const pos=chopCanvasPos(e); const hit=chopNearestMarker(L,pos,6);
+  if(hit>0){ chopDrag=hit; try{ chopCanvas.setPointerCapture(e.pointerId); }catch(_){} }
+  else if(hit===0){ /* start marker fixed */ }
+  else { L.slices.push(pos); L.slices.sort((a,b)=>a-b); drawChopEditor(); }
+});
+chopCanvas.addEventListener('pointermove',(e)=>{
+  if(chopDrag<0) return; const L=curChopLane(); if(!L) return;
+  const pos=chopCanvasPos(e);
+  const lo=(chopDrag-1>=0?L.slices[chopDrag-1]:0), hi=(chopDrag+1<L.slices.length?L.slices[chopDrag+1]:1);
+  L.slices[chopDrag]=Math.max(lo+0.001,Math.min(hi-0.001,pos)); drawChopEditor();
+});
+chopCanvas.addEventListener('pointerup',()=>{ chopDrag=-1; });
+chopCanvas.addEventListener('dblclick',(e)=>{
+  const L=curChopLane(); if(!L) return;
+  const hit=chopNearestMarker(L,chopCanvasPos(e),6);
+  if(hit>0){ L.slices.splice(hit,1);
+    L.steps.forEach(st=>{ if(st.slice>=L.slices.length) st.slice=L.slices.length-1; });
+    drawChopEditor(); rebuildGrid();
+  }
+});
 
 // --- init ---
 rebuildGrid();
