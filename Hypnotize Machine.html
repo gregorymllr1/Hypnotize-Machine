@@ -130,6 +130,7 @@
   :root{--accent:#f0e7d2;}
   .cell[data-roll="0"].ph{background:#322c3b;}
   .cell.chop-cell[data-roll] .num{display:inline;}
+  .cell.bass-cell[data-roll] .num{display:inline;}
   /* probability tilde indicator */
   .cell .prob-mark{
     position:absolute;bottom:1px;right:2px;
@@ -264,6 +265,7 @@
       </div>
       <button id="addLane" class="btn">+ Lane</button>
       <button id="addChop" class="btn">+ Chop</button>
+      <button id="addBass" class="btn">+ Bass</button>
       <button id="clear" class="btn" style="margin-left:auto">Clear</button>
     </div>
 
@@ -334,6 +336,15 @@
     <input type="range" id="ctrlSlice" min="0" max="0" step="1" value="0">
     <b id="ctrlSliceVal">0</b>
   </div>
+  <div class="mini" id="ctrlNoteRow" style="display:none">
+    <span>Note</span>
+    <input type="range" id="ctrlNote" min="12" max="72" step="1" value="36">
+    <b id="ctrlNoteVal">C2</b>
+  </div>
+  <div class="mini" id="ctrlGlideRow" style="display:none">
+    <span>Glide</span>
+    <button id="ctrlGlideBtn" class="btn" style="font-size:10px;padding:4px 10px;letter-spacing:.1em;">On</button>
+  </div>
   <div class="mini">
     <span>Vel</span>
     <input type="range" id="ctrlVel" min="0.01" max="1" step="0.01" value="1">
@@ -370,6 +381,8 @@ function defaultLanes(){
      steps:stepsFrom([1,1,1,1, 1,1,3,1, 1,1,1,1, 1,1,4,1])},
     {id:'ohh',  name:'Open Hat',  type:'ohh',   gain:0.5,  mute:false,
      steps:stepsFrom(new Array(STEPS).fill(0))},
+    {id:'bass1', name:'Bass 808', type:'bass808',gain:0.85, mute:false, tune:36, decay:0.55,
+     steps:stepsFrom(new Array(STEPS).fill(0))},
     {id:'smp1', name:'Sample 1',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null,
      steps:stepsFrom(new Array(STEPS).fill(0))},
     {id:'smp2', name:'Sample 2',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null,
@@ -394,6 +407,7 @@ let pendingPatSwitch = -1;
 // next sample lane number (default lanes have smp1 and smp2)
 let smpCounter = 2;
 let chopCounter = 1;
+let bassCounter = 1;
 
 // --- DOM refs (read before initAudio which also uses volEl) ---
 const gridEl  = document.getElementById('grid');
@@ -409,8 +423,6 @@ let tapeInput=null, tapeSat=null, tapeBit=null, tapeWow=null, tapeWowGain=null, 
 let tapeAmt=0;
 // Sidechain
 let scBus=null, scAmt=0;
-// 808 bass glide state
-let bassOsc=null, bassGain=null, lastBassNote=null;
 function initAudio(){
   if(ac) return;
   ac = new (window.AudioContext||window.webkitAudioContext)();
@@ -574,46 +586,41 @@ function smp(t,v,L){
   s.connect(g); g.connect(dest); s.start(t);
 }
 
-// 808 bass with glide - monophonic, portamentos between consecutive notes
+// 808 bass with per-lane glide — monophonic persistent osc per lane
 function bass808(t, v, L, stepIdx){
-  const targetNote = L.steps[stepIdx].note !== undefined ? L.steps[stepIdx].note : L.tune;
-  const glide = L.steps[stepIdx].glide !== false; // default glide on
-  const dur = 0.12 + (L.decay||0.3) * 0.4; // shorter than kick, more sub
-  
-  // Connect to sidechain bus (for ducking) or master
+  const st = L.steps[stepIdx];
+  const targetNote = st.note != null ? st.note : L.tune;
+  const glide = !!st.glide; // 1=portamento, 0=hard retrigger
+  const dur = 0.12 + (L.decay||0.3) * 0.4;
   const bassDest = scBus || master;
-  
-  if(!bassOsc){
-    // first note - create persistent osc
-    bassOsc = ac.createOscillator();
-    bassGain = ac.createGain();
-    bassOsc.type = 'sine';
-    bassOsc.connect(bassGain);
-    bassGain.connect(bassDest);
-    bassOsc.start(t);
-    bassGain.gain.setValueAtTime(0.0003, t);
+
+  if(!L._bassOsc){
+    L._bassOsc = ac.createOscillator();
+    L._bassGain = ac.createGain();
+    L._bassOsc.type = 'sine';
+    L._bassOsc.connect(L._bassGain);
+    L._bassGain.connect(bassDest);
+    L._bassOsc.start(t);
+    L._bassGain.gain.setValueAtTime(0.0003, t);
+    L._lastBassNote = null;
   } else {
-    // reconnect if needed (after initAudio)
-    bassGain.disconnect();
-    bassGain.connect(bassDest);
+    L._bassGain.disconnect();
+    L._bassGain.connect(bassDest);
   }
-  
+
   const targetFreq = f2(targetNote);
-  const glideTime = glide && lastBassNote !== null ? 0.06 : 0.001; // 60ms glide
-  
-  // schedule frequency change
-  bassOsc.frequency.cancelScheduledValues(t);
-  bassOsc.frequency.setValueAtTime(bassOsc.frequency.value, t);
-  bassOsc.frequency.exponentialRampToValueAtTime(targetFreq, t + glideTime);
-  
-  // envelope
-  bassGain.gain.cancelScheduledValues(t);
-  bassGain.gain.setValueAtTime(bassGain.gain.value, t);
-  bassGain.gain.setValueAtTime(0.0003, t);
-  bassGain.gain.linearRampToValueAtTime(v * L.gain, t + 0.002);
-  bassGain.gain.exponentialRampToValueAtTime(0.0003, t + dur);
-  
-  lastBassNote = targetNote;
+  const glideTime = glide && L._lastBassNote !== null ? 0.06 : 0.001;
+
+  L._bassOsc.frequency.cancelScheduledValues(t);
+  L._bassOsc.frequency.setValueAtTime(L._bassOsc.frequency.value, t);
+  L._bassOsc.frequency.exponentialRampToValueAtTime(targetFreq, t + glideTime);
+
+  L._bassGain.gain.cancelScheduledValues(t);
+  L._bassGain.gain.setValueAtTime(0.0003, t);
+  L._bassGain.gain.linearRampToValueAtTime(v * L.gain, t + 0.002);
+  L._bassGain.gain.exponentialRampToValueAtTime(0.0003, t + dur);
+
+  L._lastBassNote = targetNote;
 }
 
 function gateWindow(steps, stepIdx, sd){
@@ -794,11 +801,16 @@ function rebuildGrid(){
   }
 }
 
-function refreshCellVis(c, st, chop){
+function refreshCellVis(c, st, chop, lane){
   c.dataset.roll = st.roll;
   c.textContent = '';
+  const isBass = lane && lane.type==='bass808';
   if(chop && st.roll>0 && st.slice>=0){
     const x=document.createElement('span'); x.className='num'; x.textContent=String(st.slice)+(st.roll>1?'×'+st.roll:''); c.append(x);
+  } else if(isBass && st.roll>0){
+    const x=document.createElement('span'); x.className='num'; x.textContent=noteName(st.note!=null?st.note:36)+(st.roll>1?'×'+st.roll:''); c.append(x);
+    const gm=document.createElement('span'); gm.className='glide-mark'; gm.textContent='~'; c.append(gm);
+    c.dataset.glide=String(st.glide?1:0);
   } else if(st.roll > 1){
     const x=document.createElement('span'); x.className='num'; x.textContent='×'+st.roll; c.append(x);
   } else {
@@ -830,10 +842,10 @@ function laneRow(L){
   const stepsEl=document.createElement('div'); stepsEl.className='steps';
   for(let s=0;s<STEPS;s++){
     const c=document.createElement('button');
-    c.className='cell'+(s%4===0&&s>0?' beat':'')+(L.type==='chop'?' chop-cell':'');
+    c.className='cell'+(s%4===0&&s>0?' beat':'')+(L.type==='chop'?' chop-cell':'')+(L.type==='bass808'?' bass-cell':'');
     c.dataset.step=s;
     c.setAttribute('aria-label', L.name+' step '+(s+1));
-    refreshCellVis(c, L.steps[s], L.type==='chop');
+    refreshCellVis(c, L.steps[s], L.type==='chop', L);
 
     c.onclick=()=>{
       const st=L.steps[s];
@@ -842,7 +854,10 @@ function laneRow(L){
       if(L.type==='chop' && st.roll>0 && st.slice<0){
         const ns=(L.slices||[]).length; st.slice = ns>0 ? (s%ns) : 0;
       }
-      refreshCellVis(c, st, L.type==='chop');
+      if(L.type==='bass808' && st.roll>0 && (st.note==null)){
+        st.note = L.tune||36; st.glide = 1;
+      }
+      refreshCellVis(c, st, L.type==='chop', L);
     };
     c.oncontextmenu=(e)=>{ e.preventDefault(); showStepCtrl(c, L.steps[s], L.type==='chop', L); };
     stepsEl.append(c);
@@ -852,6 +867,9 @@ function laneRow(L){
   if(L.type==='kick'){
     extra.append(miniRange('Tune',24,48,1,L.tune,v=>{L.tune=v;return noteName(v);},noteName(L.tune)));
     extra.append(miniRange('Decay',0,1,0.01,L.decay,v=>{L.decay=v;return v.toFixed(2);},L.decay.toFixed(2)));
+  } else if(L.type==='bass808'){
+    extra.append(miniRange('Tune',12,60,1,L.tune||36,v=>{L.tune=v;return noteName(v);},noteName(L.tune||36)));
+    extra.append(miniRange('Decay',0,1,0.01,L.decay||0.55,v=>{L.decay=v;return v.toFixed(2);},(L.decay||0.55).toFixed(2)));
   } else if(L.type==='sample'){
     const load=document.createElement('button'); load.className='load btn'; load.textContent='Load sample';
     const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
@@ -922,11 +940,17 @@ const ctrlProbV = document.getElementById('ctrlProbVal');
 const ctrlSliceRow = document.getElementById('ctrlSliceRow');
 const ctrlSlice = document.getElementById('ctrlSlice');
 const ctrlSliceV = document.getElementById('ctrlSliceVal');
-let activeStep=null, activeCell=null, activeChop=false;
+const ctrlNoteRow = document.getElementById('ctrlNoteRow');
+const ctrlNoteEl = document.getElementById('ctrlNote');
+const ctrlNoteV = document.getElementById('ctrlNoteVal');
+const ctrlGlideRow = document.getElementById('ctrlGlideRow');
+const ctrlGlideBtn = document.getElementById('ctrlGlideBtn');
+let activeStep=null, activeCell=null, activeChop=false, activeLane=null;
 
 function showStepCtrl(cell, st, chop, L){
   if(!st || st.roll===0) return;
-  activeStep=st; activeCell=cell; activeChop=!!chop;
+  activeStep=st; activeCell=cell; activeChop=!!chop; activeLane=L||null;
+  const isBass = L && L.type==='bass808';
   if(chop && L){
     const n=Math.max(1,(L.slices||[]).length);
     ctrlSliceRow.style.display='';
@@ -935,13 +959,18 @@ function showStepCtrl(cell, st, chop, L){
     if(st.slice>n-1) st.slice=n-1;
     ctrlSlice.value=String(st.slice);
     ctrlSliceV.textContent=String(st.slice);
-  } else {
-    ctrlSliceRow.style.display='none';
-  }
+  } else { ctrlSliceRow.style.display='none'; }
+  if(isBass){
+    const note = st.note!=null ? st.note : (L.tune||36);
+    ctrlNoteRow.style.display=''; ctrlGlideRow.style.display='';
+    ctrlNoteEl.value=String(note); ctrlNoteV.textContent=noteName(note);
+    ctrlGlideBtn.textContent=st.glide?'On':'Off';
+    ctrlGlideBtn.classList.toggle('on',!!st.glide);
+  } else { ctrlNoteRow.style.display='none'; ctrlGlideRow.style.display='none'; }
   ctrlVel.value=st.vel; ctrlVelV.textContent=Math.round(st.vel*100)+'%';
   ctrlProb.value=st.prob; ctrlProbV.textContent=Math.round(st.prob*100)+'%';
   const r=cell.getBoundingClientRect();
-  stepCtrl.style.left = Math.min(r.left, window.innerWidth-200)+'px';
+  stepCtrl.style.left = Math.min(r.left, window.innerWidth-220)+'px';
   stepCtrl.style.top  = (r.bottom+5)+'px';
   stepCtrl.classList.add('show');
 }
@@ -949,19 +978,32 @@ ctrlSlice.oninput=()=>{
   if(!activeStep||!activeChop) return;
   activeStep.slice=parseInt(ctrlSlice.value);
   ctrlSliceV.textContent=String(activeStep.slice);
-  if(activeCell) refreshCellVis(activeCell,activeStep,true);
+  if(activeCell) refreshCellVis(activeCell,activeStep,true,activeLane);
+};
+ctrlNoteEl.oninput=()=>{
+  if(!activeStep||!activeLane||activeLane.type!=='bass808') return;
+  activeStep.note=parseInt(ctrlNoteEl.value);
+  ctrlNoteV.textContent=noteName(activeStep.note);
+  if(activeCell) refreshCellVis(activeCell,activeStep,false,activeLane);
+};
+ctrlGlideBtn.onclick=()=>{
+  if(!activeStep||!activeLane||activeLane.type!=='bass808') return;
+  activeStep.glide=activeStep.glide?0:1;
+  ctrlGlideBtn.textContent=activeStep.glide?'On':'Off';
+  ctrlGlideBtn.classList.toggle('on',!!activeStep.glide);
+  if(activeCell) refreshCellVis(activeCell,activeStep,false,activeLane);
 };
 ctrlVel.oninput=()=>{
   if(!activeStep) return;
   activeStep.vel=parseFloat(ctrlVel.value);
   ctrlVelV.textContent=Math.round(activeStep.vel*100)+'%';
-  if(activeCell) refreshCellVis(activeCell,activeStep);
+  if(activeCell) refreshCellVis(activeCell,activeStep,activeChop,activeLane);
 };
 ctrlProb.oninput=()=>{
   if(!activeStep) return;
   activeStep.prob=parseFloat(ctrlProb.value);
   ctrlProbV.textContent=Math.round(activeStep.prob*100)+'%';
-  if(activeCell) refreshCellVis(activeCell,activeStep);
+  if(activeCell) refreshCellVis(activeCell,activeStep,activeChop,activeLane);
 };
 document.addEventListener('pointerdown',(e)=>{
   if(stepCtrl.classList.contains('show') && !stepCtrl.contains(e.target)){
@@ -1006,7 +1048,8 @@ document.getElementById('addPat').onclick=()=>{
     ...L,
     steps:stepsFrom(new Array(STEPS).fill(0)),
     buffer:null, fname:null,
-    slices: L.type==='chop' ? [0] : L.slices
+    slices: L.type==='chop' ? [0] : L.slices,
+    _bassOsc: undefined, _bassGain: undefined, _lastBassNote: undefined
   }));
   patterns.push({name, lanes:newLanes});
   buildPatBtns();
@@ -1032,6 +1075,20 @@ document.getElementById('addLane').onclick=()=>{
   patterns.forEach(p=>{
     if(!p.lanes.find(l=>l.id===id)){
       p.lanes.push({id,name,type:'sample',gain:0.85,mute:false,buffer:null,semis:0,fname:null,
+        steps:stepsFrom(new Array(STEPS).fill(0))});
+    }
+  });
+  rebuildGrid();
+};
+
+// --- add bass lane ---
+document.getElementById('addBass').onclick=()=>{
+  bassCounter++;
+  const id='bass'+bassCounter;
+  const name='Bass '+bassCounter;
+  patterns.forEach(p=>{
+    if(!p.lanes.find(l=>l.id===id)){
+      p.lanes.push({id,name,type:'bass808',gain:0.85,mute:false,tune:36,decay:0.55,
         steps:stepsFrom(new Array(STEPS).fill(0))});
     }
   });
@@ -1168,12 +1225,39 @@ document.getElementById('export').onclick=async()=>{
         s.start(t, sliceStart, playLen); s.stop(endT+0.02);
       }
     }
+    const offlineBassState=new Map();
+    function bass808O(t,v,L,stepIdx){
+      const st=L.steps[stepIdx];
+      const targetNote=st.note!=null?st.note:(L.tune||36);
+      const glide=!!st.glide;
+      const dur=0.12+(L.decay||0.55)*0.4;
+      const targetFreq=f2(targetNote);
+      const peak=Math.max(v*L.gain,0.0003);
+      let state=offlineBassState.get(L.id);
+      if(!state){
+        const osc=offline.createOscillator(); const g=offline.createGain();
+        osc.type='sine'; osc.connect(g); g.connect(mOff);
+        g.gain.setValueAtTime(0.0003,0);
+        osc.start(0); osc.stop(duration);
+        state={osc,gain:g,lastFreq:null};
+        offlineBassState.set(L.id,state);
+      }
+      const glideTime=glide&&state.lastFreq!==null?0.06:0.001;
+      state.osc.frequency.cancelScheduledValues(t);
+      state.osc.frequency.setValueAtTime(state.lastFreq||targetFreq,t);
+      state.osc.frequency.exponentialRampToValueAtTime(targetFreq,t+glideTime);
+      state.gain.gain.cancelScheduledValues(t);
+      state.gain.gain.setValueAtTime(0.0003,t);
+      state.gain.gain.linearRampToValueAtTime(peak,t+0.002);
+      state.gain.gain.exponentialRampToValueAtTime(0.0003,t+dur);
+      state.lastFreq=targetFreq;
+    }
     function trigO(L,t,v,stepIdx){
       switch(L.type){
         case 'kick': kickO(t,v,L); break; case 'snare': snareO(t,v,L); break;
         case 'clap': clapO(t,v,L); break; case 'chh':  hatO(t,v,L,false); break;
         case 'ohh':  hatO(t,v,L,true); break; case 'sample': smpO(t,v,L); break;
-        case 'chop': chopO(t,v,L,stepIdx); break;
+        case 'chop': chopO(t,v,L,stepIdx); break; case 'bass808': bass808O(t,v,L,stepIdx); break;
       }
     }
 
@@ -1247,14 +1331,15 @@ document.getElementById('midiExport').onclick=()=>{
 
   for(const L of lanes){
     if(L.mute) continue;
-    const isChop=L.type==='chop';
-    const baseNote=isChop?60:(L.type==='sample'?SMP_NOTES[smpIdx++%SMP_NOTES.length]:DRUM_NOTE[L.type]);
-    if(baseNote==null) continue;
+    const isChop=L.type==='chop', isBass=L.type==='bass808';
+    const baseNote=isChop?60:isBass?null:(L.type==='sample'?SMP_NOTES[smpIdx++%SMP_NOTES.length]:DRUM_NOTE[L.type]);
+    if(!isBass && baseNote==null) continue;
     for(let s=0;s<STEPS;s++){
       const st=L.steps[s];
       if(st.roll===0) continue;
       if(isChop && st.slice<0) continue;
-      const note=isChop?Math.max(0,Math.min(127,baseNote+st.slice)):baseNote;
+      if(isBass && (st.note==null && L.tune==null)) continue;
+      const note=isChop?Math.max(0,Math.min(127,baseNote+st.slice)):isBass?Math.max(0,Math.min(127,st.note!=null?st.note:L.tune)):baseNote;
       for(let i=0;i<st.roll;i++){
         const baseTick=s*tickStep;
         const swTicks=(s%2===1)?Math.round(swing*tickStep):0;
@@ -1388,6 +1473,9 @@ function loadPattern(name){
   chopCounter=patterns.flatMap(p=>p.lanes)
     .filter(l=>l.type==='chop')
     .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('chop',''))||0; return Math.max(mx,n); },1);
+  bassCounter=patterns.flatMap(p=>p.lanes)
+    .filter(l=>l.type==='bass808')
+    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('bass',''))||0; return Math.max(mx,n); },1);
 
   const songBtn=document.getElementById('songToggle');
   songBtn.textContent=songMode?'On':'Off'; songBtn.classList.toggle('on',songMode);
