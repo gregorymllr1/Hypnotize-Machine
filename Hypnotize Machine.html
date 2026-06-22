@@ -390,7 +390,7 @@ const noteName = m => NOTE[(m%12+12)%12] + (Math.floor(m/12)-1);
 // --- step model ---
 function makeStep(roll=0){ return {roll, vel:1.0, prob:1.0, glide:1, note:36, slice:-1, decay:null, pan:null, filter:null}; }
 function stepsFrom(arr, len){ return arr.map(r => makeStep(r)); }
-function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36, slice:s.slice!=null?s.slice:-1, decay:s.decay!=null?s.decay:null, pan:s.pan!=null?s.pan:null, filter:s.filter!=null?s.filter:null}; }
+function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36, slice:s.slice!=null?s.slice:-1, decay:s.decay!=null?s.decay:null, pan:s.pan!=null?s.pan:null, filter:s.filter!=null?s.filter:null, _timingOffset:s._timingOffset!=null?s._timingOffset:0}; }
 
 // --- Euclidean generator ---
 function euclidean(k, n){
@@ -1555,6 +1555,83 @@ const STORAGE_KEY='hypnotize_v2';
 function getStoredPatterns(){ try{ return JSON.parse(localStorage.getItem(STORAGE_KEY))||{}; } catch{ return {}; } }
 function saveStoredPatterns(p){ localStorage.setItem(STORAGE_KEY,JSON.stringify(p)); }
 
+// --- single source of truth for serialize / restore (settings seam) ---
+function buildSettings(title){
+  return {
+    meta:{ app:'Hypnotize Machine', schema:3, title:title||'untitled', created:new Date().toISOString() },
+    version:3,
+    bpm, swing,
+    master: parseFloat(volEl.value),
+    tape: tapeAmt,
+    sidechain: scAmt,
+    patterns: patterns.map(p=>({
+      name:p.name,
+      lanes:p.lanes.map(L=>({
+        id:L.id, name:L.name, type:L.type,
+        steps:L.steps.map(s=>({...s})),
+        gain:L.gain, mute:L.mute,
+        tune:L.tune, decay:L.decay,
+        semis:L.semis||0, fname:L.fname||null,
+        slices:L.slices?[...L.slices]:undefined, warp:L.warp||undefined,
+        length:L.length||16
+      }))
+    })),
+    songSeq:[...songSeq], songMode
+  };
+}
+
+function applySettings(obj){
+  if(!obj) return;
+  bpm=obj.bpm||140; swing=obj.swing||0;
+  bpmEl.value=bpm; swingEl.value=swing;
+  document.getElementById('bpmval').textContent=bpm;
+  document.getElementById('bpmlbl').textContent=bpm;
+  document.getElementById('swinglbl').textContent=Math.round(swing*100)+'%';
+
+  const mv = obj.master!=null ? obj.master : 0.9;
+  volEl.value=mv; document.getElementById('vollbl').textContent=Math.round(mv*100);
+  if(master) master.gain.setTargetAtTime(mv, ac.currentTime, 0.01);
+  tapeAmt = obj.tape!=null ? obj.tape : 0;
+  tapeEl.value=tapeAmt; document.getElementById('tapelbl').textContent=Math.round(tapeAmt*100)+'%';
+  if(ac) updateTape(tapeAmt);
+  scAmt = obj.sidechain!=null ? obj.sidechain : 0;
+  scEl.value=scAmt; document.getElementById('sclbl').textContent=Math.round(scAmt*100)+'%';
+
+  if((obj.version===2||obj.version===3)&&obj.patterns){
+    patterns=obj.patterns.map(pat=>({
+      name:pat.name,
+      lanes:pat.lanes.map(L=>({
+        ...L,
+        steps:L.steps.map(coerceStep),
+        buffer:null,
+        slices: L.type==='chop' ? (L.slices&&L.slices.length?[...L.slices]:[0]) : L.slices,
+        warp:  L.type==='chop' ? (L.warp||'gate') : L.warp,
+        length: L.length||16
+      }))
+    }));
+    songSeq=obj.songSeq||[0];
+    songMode=obj.songMode||false;
+  } else {
+    const rawLanes=(obj.lanes||[]).map(L=>({...L,steps:(L.steps||[]).map(coerceStep),buffer:null,length:L.length||16}));
+    patterns=[{name:'A', lanes:rawLanes.length?rawLanes:defaultLanes()}];
+    songSeq=[0]; songMode=false;
+  }
+  curPat=0; lanes=patterns[0].lanes;
+
+  smpCounter=patterns.flatMap(p=>p.lanes).filter(l=>l.type==='sample')
+    .reduce((mx,l)=>{ const n=parseInt(l.id.replace('smp',''))||0; return Math.max(mx,n); },2);
+  chopCounter=patterns.flatMap(p=>p.lanes).filter(l=>l.type==='chop')
+    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('chop',''))||0; return Math.max(mx,n); },1);
+  bassCounter=patterns.flatMap(p=>p.lanes).filter(l=>l.type==='bass808')
+    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('bass',''))||0; return Math.max(mx,n); },1);
+
+  const songBtn=document.getElementById('songToggle');
+  songBtn.textContent=songMode?'On':'Off'; songBtn.classList.toggle('on',songMode);
+  document.getElementById('songSeqWrap').classList.toggle('show',songMode);
+
+  rebuildGrid(); buildPatBtns(); buildSongSlots(); updatePresetDropdown();
+}
+
 function updatePresetDropdown(){
   const sel=document.getElementById('loadPreset');
   const saves=getStoredPatterns();
@@ -1568,21 +1645,7 @@ function saveCurrentPattern(){
   const name=(prompt('Save name:')||'').trim();
   if(!name) return;
   const saves=getStoredPatterns();
-  saves[name]={
-    version:2, bpm, swing,
-    patterns:patterns.map(p=>({
-      name:p.name,
-      lanes:p.lanes.map(L=>({
-        id:L.id, name:L.name, type:L.type,
-        steps:L.steps.map(s=>({...s})),
-        gain:L.gain, mute:L.mute,
-        tune:L.tune, decay:L.decay,
-        semis:L.semis||0, fname:L.fname||null,
-        slices:L.slices?[...L.slices]:undefined, warp:L.warp||undefined
-      }))
-    })),
-    songSeq:[...songSeq], songMode
-  };
+  saves[name]=buildSettings(name);
   saveStoredPatterns(saves);
   updatePresetDropdown();
   alert('Saved "'+name+'"');
@@ -1591,50 +1654,7 @@ function saveCurrentPattern(){
 function loadPattern(name){
   const saves=getStoredPatterns();
   const p=saves[name]; if(!p) return;
-
-  bpm=p.bpm||140; swing=p.swing||0;
-  bpmEl.value=bpm; swingEl.value=swing;
-  document.getElementById('bpmval').textContent=bpm;
-  document.getElementById('bpmlbl').textContent=bpm;
-  document.getElementById('swinglbl').textContent=Math.round(swing*100)+'%';
-
-  if(p.version===2&&p.patterns){
-    patterns=p.patterns.map(pat=>({
-      name:pat.name,
-      lanes:pat.lanes.map(L=>({
-        ...L,
-        steps:L.steps.map(coerceStep),
-        buffer:null,
-        slices: L.type==='chop' ? (L.slices&&L.slices.length?[...L.slices]:[0]) : L.slices,
-        warp:  L.type==='chop' ? (L.warp||'gate') : L.warp
-      }))
-    }));
-    songSeq=p.songSeq||[0];
-    songMode=p.songMode||false;
-  } else {
-    // v1 single-pattern save
-    const rawLanes=(p.lanes||[]).map(L=>({...L,steps:(L.steps||[]).map(coerceStep),buffer:null}));
-    patterns=[{name:'A', lanes:rawLanes.length?rawLanes:defaultLanes()}];
-    songSeq=[0]; songMode=false;
-  }
-  curPat=0; lanes=patterns[0].lanes;
-
-  // recalculate smpCounter
-  smpCounter=patterns.flatMap(p=>p.lanes)
-    .filter(l=>l.type==='sample')
-    .reduce((mx,l)=>{ const n=parseInt(l.id.replace('smp',''))||0; return Math.max(mx,n); },2);
-  chopCounter=patterns.flatMap(p=>p.lanes)
-    .filter(l=>l.type==='chop')
-    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('chop',''))||0; return Math.max(mx,n); },1);
-  bassCounter=patterns.flatMap(p=>p.lanes)
-    .filter(l=>l.type==='bass808')
-    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('bass',''))||0; return Math.max(mx,n); },1);
-
-  const songBtn=document.getElementById('songToggle');
-  songBtn.textContent=songMode?'On':'Off'; songBtn.classList.toggle('on',songMode);
-  document.getElementById('songSeqWrap').classList.toggle('show',songMode);
-
-  rebuildGrid(); buildPatBtns(); buildSongSlots(); updatePresetDropdown();
+  applySettings(p);
 }
 
 function deletePattern(){
