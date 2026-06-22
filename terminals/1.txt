@@ -1,0 +1,14 @@
+---
+pid: 29128
+cwd: "C:\Users\Te-Grizz\Documents\real code, not fake\Hynotize Machine\Hypnotize-Machine"
+command: "cd \"C:\\Users\\Te-Grizz\\Documents\\real code, not fake\\Hynotize Machine\\Hypnotize-Machine\" && python -m http.server 8765"
+started_at: 2026-06-22T01:14:08.279Z
+running_for_ms: 205004   
+---
+At line:1 char:89
++ ... ts\real code, not fake\Hynotize Machine\Hypnotize-Machine" && python  ...
++                                                                ~~
+The token '&&' is not a valid statement separator in this version.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : InvalidEndOfLine
+ 
