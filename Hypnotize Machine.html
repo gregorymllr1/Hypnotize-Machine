@@ -129,6 +129,7 @@
   .cell.ph{box-shadow:0 -3px 0 var(--accent), 0 0 0 1px var(--accent) inset;}
   :root{--accent:#f0e7d2;}
   .cell[data-roll="0"].ph{background:#322c3b;}
+  .cell.chop-cell[data-roll] .num{display:inline;}
   /* probability tilde indicator */
   .cell .prob-mark{
     position:absolute;bottom:1px;right:2px;
@@ -328,6 +329,11 @@
 <!-- shared per-step vel/prob popover (fixed position, moved to active cell) -->
 <div id="stepCtrl" class="step-ctrl">
   <div class="step-ctrl-title">Step Settings</div>
+  <div class="mini" id="ctrlSliceRow" style="display:none">
+    <span>Slice</span>
+    <input type="range" id="ctrlSlice" min="0" max="0" step="1" value="0">
+    <b id="ctrlSliceVal">0</b>
+  </div>
   <div class="mini">
     <span>Vel</span>
     <input type="range" id="ctrlVel" min="0.01" max="1" step="0.01" value="1">
@@ -732,10 +738,12 @@ function rebuildGrid(){
   }
 }
 
-function refreshCellVis(c, st){
+function refreshCellVis(c, st, chop){
   c.dataset.roll = st.roll;
   c.textContent = '';
-  if(st.roll > 1){
+  if(chop && st.roll>0 && st.slice>=0){
+    const x=document.createElement('span'); x.className='num'; x.textContent=String(st.slice)+(st.roll>1?'×'+st.roll:''); c.append(x);
+  } else if(st.roll > 1){
     const x=document.createElement('span'); x.className='num'; x.textContent='×'+st.roll; c.append(x);
   } else {
     const d=document.createElement('span'); d.className='dot'; c.append(d);
@@ -766,18 +774,21 @@ function laneRow(L){
   const stepsEl=document.createElement('div'); stepsEl.className='steps';
   for(let s=0;s<STEPS;s++){
     const c=document.createElement('button');
-    c.className='cell'+(s%4===0&&s>0?' beat':'');
+    c.className='cell'+(s%4===0&&s>0?' beat':'')+(L.type==='chop'?' chop-cell':'');
     c.dataset.step=s;
     c.setAttribute('aria-label', L.name+' step '+(s+1));
-    refreshCellVis(c, L.steps[s]);
+    refreshCellVis(c, L.steps[s], L.type==='chop');
 
     c.onclick=()=>{
       const st=L.steps[s];
       const idx=(ROLL_CYCLE.indexOf(st.roll)+1)%ROLL_CYCLE.length;
       st.roll=ROLL_CYCLE[idx];
-      refreshCellVis(c, st);
+      if(L.type==='chop' && st.roll>0 && st.slice<0){
+        const ns=(L.slices||[]).length; st.slice = ns>0 ? (s%ns) : 0;
+      }
+      refreshCellVis(c, st, L.type==='chop');
     };
-    c.oncontextmenu=(e)=>{ e.preventDefault(); showStepCtrl(c, L.steps[s]); };
+    c.oncontextmenu=(e)=>{ e.preventDefault(); showStepCtrl(c, L.steps[s], L.type==='chop', L); };
     stepsEl.append(c);
   }
 
@@ -852,11 +863,25 @@ const ctrlVel   = document.getElementById('ctrlVel');
 const ctrlVelV  = document.getElementById('ctrlVelVal');
 const ctrlProb  = document.getElementById('ctrlProb');
 const ctrlProbV = document.getElementById('ctrlProbVal');
-let activeStep=null, activeCell=null;
+const ctrlSliceRow = document.getElementById('ctrlSliceRow');
+const ctrlSlice = document.getElementById('ctrlSlice');
+const ctrlSliceV = document.getElementById('ctrlSliceVal');
+let activeStep=null, activeCell=null, activeChop=false;
 
-function showStepCtrl(cell, st){
+function showStepCtrl(cell, st, chop, L){
   if(!st || st.roll===0) return;
-  activeStep=st; activeCell=cell;
+  activeStep=st; activeCell=cell; activeChop=!!chop;
+  if(chop && L){
+    const n=Math.max(1,(L.slices||[]).length);
+    ctrlSliceRow.style.display='';
+    ctrlSlice.max=String(n-1);
+    if(st.slice<0) st.slice=0;
+    if(st.slice>n-1) st.slice=n-1;
+    ctrlSlice.value=String(st.slice);
+    ctrlSliceV.textContent=String(st.slice);
+  } else {
+    ctrlSliceRow.style.display='none';
+  }
   ctrlVel.value=st.vel; ctrlVelV.textContent=Math.round(st.vel*100)+'%';
   ctrlProb.value=st.prob; ctrlProbV.textContent=Math.round(st.prob*100)+'%';
   const r=cell.getBoundingClientRect();
@@ -864,6 +889,12 @@ function showStepCtrl(cell, st){
   stepCtrl.style.top  = (r.bottom+5)+'px';
   stepCtrl.classList.add('show');
 }
+ctrlSlice.oninput=()=>{
+  if(!activeStep||!activeChop) return;
+  activeStep.slice=parseInt(ctrlSlice.value);
+  ctrlSliceV.textContent=String(activeStep.slice);
+  if(activeCell) refreshCellVis(activeCell,activeStep,true);
+};
 ctrlVel.oninput=()=>{
   if(!activeStep) return;
   activeStep.vel=parseFloat(ctrlVel.value);
