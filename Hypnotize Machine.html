@@ -191,6 +191,19 @@
   .sep{width:1px;height:20px;background:var(--line);margin:0 4px;flex-shrink:0;}
   .icon-btn{padding:4px 9px;font-size:14px;line-height:1;letter-spacing:0;}
 
+  /* chop / slice editor */
+  .chop-editor{display:none;flex-direction:column;gap:8px;padding:12px 18px;
+    border-top:1px solid var(--line);background:rgba(0,0,0,.20);}
+  .chop-editor.show{display:flex;}
+  .chop-editor-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .chop-editor-title{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--trim);}
+  .chop-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;}
+  .chop-tools .mini span{min-width:auto;}
+  .chop-canvas{width:100%;height:120px;background:var(--lcd-bg);border:1px solid #3a2a12;border-radius:8px;
+    display:block;cursor:crosshair;touch-action:none;}
+  .chop-hint{font-size:10px;color:var(--trim-dim);letter-spacing:.06em;}
+  .warp-btn.on{background:#1a3520;border-color:#3a6040;color:#7ac97a;}
+
   footer{display:flex;align-items:center;gap:18px;flex-wrap:wrap;
     padding:13px 18px;border-top:1px solid var(--line);background:rgba(0,0,0,.16);}
   .legend{display:flex;align-items:center;gap:13px;flex-wrap:wrap;font-size:10px;
@@ -255,6 +268,29 @@
 
     <div class="scroll">
       <div class="grid" id="grid"></div>
+    </div>
+
+    <!-- chop / slice editor -->
+    <div id="chopEditor" class="chop-editor">
+      <div class="chop-editor-head">
+        <span class="chop-editor-title" id="chopTitle">Slice Editor</span>
+        <div class="chop-tools">
+          <select id="chopMode" class="btn">
+            <option value="transient">Transient</option>
+            <option value="grid">Grid</option>
+          </select>
+          <span class="mini" id="chopSensWrap"><span>Sens</span><input type="range" id="chopSens" min="0" max="1" step="0.01" value="0.5"><b id="chopSensVal">50%</b></span>
+          <select id="chopDiv" class="btn" style="display:none">
+            <option value="4">4</option><option value="8" selected>8</option><option value="16">16</option><option value="32">32</option>
+          </select>
+          <button id="chopAuto" class="btn">Auto-slice</button>
+          <button id="chopMap" class="btn">Map to steps</button>
+          <button id="chopClear" class="btn">Clear slices</button>
+          <button id="chopClose" class="btn icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <canvas id="chopCanvas" class="chop-canvas"></canvas>
+      <div class="chop-hint">Click = add marker · drag = move · double-click = delete</div>
     </div>
 
     <!-- song / pattern bar -->
@@ -691,6 +727,9 @@ function switchPattern(idx){
 function rebuildGrid(){
   gridEl.innerHTML = '';
   lanes.forEach(L => gridEl.append(laneRow(L)));
+  if(typeof chopEditor!=='undefined' && chopEditor.classList.contains('show')){
+    if(curChopLane()){ wfCache.id=null; drawChopEditor(); } else closeChopEditor();
+  }
 }
 
 function refreshCellVis(c, st){
@@ -1257,6 +1296,80 @@ document.addEventListener('keydown',e=>{
     e.preventDefault(); toggle();
   }
 });
+
+// --- chop / slice editor ---
+let chopEditorLaneId=null;
+let wfCache={id:null,w:0,peaks:null};
+const chopEditor = document.getElementById('chopEditor');
+const chopCanvas = document.getElementById('chopCanvas');
+const chopCtx = chopCanvas.getContext('2d');
+
+function curChopLane(){ return lanes.find(l=>l.id===chopEditorLaneId) || null; }
+
+function toggleChopEditor(L){
+  if(chopEditorLaneId===L.id && chopEditor.classList.contains('show')){ closeChopEditor(); return; }
+  chopEditorLaneId=L.id; wfCache.id=null;
+  document.getElementById('chopTitle').textContent='Slice Editor — '+L.name;
+  chopEditor.classList.add('show');
+  drawChopEditor();
+}
+function closeChopEditor(){ chopEditor.classList.remove('show'); chopEditorLaneId=null; }
+
+function getPeaks(L,w){
+  if(wfCache.id===L.id && wfCache.w===w && wfCache.peaks) return wfCache.peaks;
+  const data=L.buffer.getChannelData(0);
+  const step=Math.max(1,Math.floor(data.length/w));
+  const peaks=new Float32Array(w*2);
+  for(let x=0;x<w;x++){
+    let min=1,max=-1; const start=x*step;
+    for(let i=0;i<step;i++){ const v=data[start+i]||0; if(v<min)min=v; if(v>max)max=v; }
+    peaks[x*2]=min; peaks[x*2+1]=max;
+  }
+  wfCache={id:L.id,w,peaks};
+  return peaks;
+}
+
+function drawChopEditor(){
+  const L=curChopLane();
+  if(!L){ closeChopEditor(); return; }
+  const w=Math.max(200, chopCanvas.clientWidth||chopCanvas.offsetWidth||600), h=120;
+  if(chopCanvas.width!==w) chopCanvas.width=w;
+  if(chopCanvas.height!==h) chopCanvas.height=h;
+  chopCtx.clearRect(0,0,w,h);
+  chopCtx.strokeStyle='rgba(243,177,60,.15)';
+  chopCtx.beginPath(); chopCtx.moveTo(0,h/2); chopCtx.lineTo(w,h/2); chopCtx.stroke();
+  if(L.buffer){
+    const peaks=getPeaks(L,w);
+    chopCtx.strokeStyle='rgba(243,177,60,.65)'; chopCtx.beginPath();
+    for(let x=0;x<w;x++){
+      const min=peaks[x*2], max=peaks[x*2+1];
+      const y1=(1-(max*0.9+1)/2)*h, y2=(1-(min*0.9+1)/2)*h;
+      chopCtx.moveTo(x+0.5,y1); chopCtx.lineTo(x+0.5,y2);
+    }
+    chopCtx.stroke();
+  } else {
+    chopCtx.fillStyle='rgba(216,203,178,.4)'; chopCtx.font='11px monospace';
+    chopCtx.fillText('load a loop to slice', 12, h/2-8);
+  }
+  (L.slices||[]).forEach((pos,i)=>{
+    const x=pos*w;
+    chopCtx.strokeStyle = i===0 ? 'rgba(216,203,178,.5)' : 'rgba(239,127,44,.95)';
+    chopCtx.beginPath(); chopCtx.moveTo(x,0); chopCtx.lineTo(x,h); chopCtx.stroke();
+    chopCtx.fillStyle='#efb84a'; chopCtx.font='9px monospace';
+    chopCtx.fillText(String(i), Math.min(w-10,x+3), 11);
+  });
+  if(playing && drawStep>=0){
+    const st=L.steps[drawStep];
+    if(st && st.roll>0 && st.slice>=0 && st.slice<L.slices.length){
+      const x=L.slices[st.slice]*w;
+      chopCtx.strokeStyle='rgba(122,201,122,.9)'; chopCtx.lineWidth=2;
+      chopCtx.beginPath(); chopCtx.moveTo(x,0); chopCtx.lineTo(x,h); chopCtx.stroke();
+      chopCtx.lineWidth=1;
+    }
+  }
+}
+
+window.addEventListener('resize',()=>{ if(chopEditor.classList.contains('show')){ wfCache.id=null; drawChopEditor(); } });
 
 // --- init ---
 rebuildGrid();
