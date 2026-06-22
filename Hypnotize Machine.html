@@ -355,6 +355,29 @@
     <input type="range" id="ctrlProb" min="0.01" max="1" step="0.01" value="1">
     <b id="ctrlProbVal">100%</b>
   </div>
+  <div class="mini" id="ctrlDecayRow" style="display:none">
+    <span>Decay</span>
+    <input type="range" id="ctrlDecay" min="0" max="1" step="0.01" value="0.5">
+    <b id="ctrlDecayVal">0.50</b>
+  </div>
+  <div class="mini" id="ctrlPanRow" style="display:none">
+    <span>Pan</span>
+    <input type="range" id="ctrlPan" min="-1" max="1" step="0.01" value="0">
+    <b id="ctrlPanVal">C</b>
+  </div>
+  <div class="mini" id="ctrlFilterRow" style="display:none">
+    <span>Filter</span>
+    <input type="range" id="ctrlFilter" min="0" max="1" step="0.01" value="1">
+    <b id="ctrlFilterVal">100%</b>
+  </div>
+  <div class="step-ctrl-title" style="margin-top:6px">Euclidean / Humanize</div>
+  <div class="mini">
+    <span>Hits</span>
+    <input type="range" id="ctrlEuHits" min="1" max="16" step="1" value="4">
+    <b id="ctrlEuHitsVal">4</b>
+  </div>
+  <button id="ctrlEuBtn" class="btn" style="font-size:10px;padding:6px 10px;letter-spacing:.1em;">Apply Euclidean</button>
+  <button id="ctrlHumanizeBtn" class="btn" style="font-size:10px;padding:6px 10px;letter-spacing:.1em;">Humanize</button>
 </div>
 
 <script>
@@ -365,30 +388,51 @@ const NOTE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const noteName = m => NOTE[(m%12+12)%12] + (Math.floor(m/12)-1);
 
 // --- step model ---
-function makeStep(roll=0){ return {roll, vel:1.0, prob:1.0, glide:1, note:36, slice:-1}; }
-function stepsFrom(arr){ return arr.map(r => makeStep(r)); }
-function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36, slice:s.slice!=null?s.slice:-1}; }
+function makeStep(roll=0){ return {roll, vel:1.0, prob:1.0, glide:1, note:36, slice:-1, decay:null, pan:null, filter:null}; }
+function stepsFrom(arr, len){ return arr.map(r => makeStep(r)); }
+function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36, slice:s.slice!=null?s.slice:-1, decay:s.decay!=null?s.decay:null, pan:s.pan!=null?s.pan:null, filter:s.filter!=null?s.filter:null}; }
+
+// --- Euclidean generator ---
+function euclidean(k, n){
+  // Spread k hits evenly across n steps (Bjorklund algorithm simplified)
+  const beats = new Array(n).fill(0);
+  for(let i=0;i<k;i++){ beats[Math.floor(i*n/k)] = 1; }
+  // Rotate to start on 1
+  const rot = beats.indexOf(1);
+  return [...beats.slice(rot), ...beats.slice(0,rot)];
+}
+
+function humanize(steps, timingAmt=0.08, velAmt=0.15){
+  // Add micro-timing jitter and velocity variation
+  return steps.map(s => {
+    if(s.roll<=0) return s;
+    return {...s, 
+      _timingOffset: (Math.random()-0.5)*timingAmt, 
+      vel: Math.max(0.1, Math.min(1, s.vel + (Math.random()-0.5)*velAmt))
+    };
+  });
+}
 
 function defaultLanes(){
   return [
-    {id:'kick', name:'Kick / 808', type:'kick',  gain:0.95, mute:false, tune:36, decay:0.55,
+    {id:'kick', name:'Kick / 808', type:'kick',  gain:0.95, mute:false, tune:36, decay:0.55, length:16,
      steps:stepsFrom([1,0,0,0, 0,0,1,0, 0,0,1,0, 0,0,0,0])},
-    {id:'snare',name:'Snare',     type:'snare', gain:0.85, mute:false,
+    {id:'snare',name:'Snare',     type:'snare', gain:0.85, mute:false, length:16,
      steps:stepsFrom([0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0])},
-    {id:'clap', name:'Clap',      type:'clap',  gain:0.6,  mute:false,
+    {id:'clap', name:'Clap',      type:'clap',  gain:0.6,  mute:false, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
-    {id:'chh',  name:'Closed Hat',type:'chh',   gain:0.55, mute:false,
+    {id:'chh',  name:'Closed Hat',type:'chh',   gain:0.55, mute:false, length:16,
      steps:stepsFrom([1,1,1,1, 1,1,3,1, 1,1,1,1, 1,1,4,1])},
-    {id:'ohh',  name:'Open Hat',  type:'ohh',   gain:0.5,  mute:false,
+    {id:'ohh',  name:'Open Hat',  type:'ohh',   gain:0.5,  mute:false, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
-    {id:'bass1', name:'Bass 808', type:'bass808',gain:0.85, mute:false, tune:36, decay:0.55,
+    {id:'bass1', name:'Bass 808', type:'bass808',gain:0.85, mute:false, tune:36, decay:0.55, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
-    {id:'smp1', name:'Sample 1',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null,
+    {id:'smp1', name:'Sample 1',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
-    {id:'smp2', name:'Sample 2',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null,
+    {id:'smp2', name:'Sample 2',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
     {id:'chop1', name:'Chop 1', type:'chop', gain:0.85, mute:false, buffer:null, fname:null,
-     slices:[0], warp:'gate', semis:0,
+     slices:[0], warp:'gate', semis:0, length:16,
      steps:stepsFrom(new Array(STEPS).fill(0))},
   ];
 }
@@ -420,7 +464,33 @@ const volEl   = document.getElementById('vol');
 let ac=null, master=null, comp=null, noiseBuf=null, mediaDest=null, mediaRecorder=null, recordedChunks=[];
 // Tape/Grit chain
 let tapeInput=null, tapeSat=null, tapeBit=null, tapeWow=null, tapeWowGain=null, tapeHiss=null, tapeHissGain=null;
-let tapeAmt=0;
+let tapeAmt=0, tapeBitReady=false;
+
+const BITCRUSH_WORKLET = `
+class BitcrushProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors(){
+    return [
+      {name:'bits',      defaultValue:16, minValue:4,  maxValue:16, automationRate:'k-rate'},
+      {name:'reduction', defaultValue:1,  minValue:1,  maxValue:16, automationRate:'k-rate'}
+    ];
+  }
+  process(inputs, outputs, params){
+    const bits = params.bits[0], red = Math.max(1, Math.round(params.reduction[0]));
+    const step = 1 / Math.pow(2, bits - 1);
+    for(let ch=0; ch<outputs[0].length; ch++){
+      const inp = inputs[0][ch] || new Float32Array(outputs[0][ch].length);
+      const out = outputs[0][ch];
+      for(let i=0; i<out.length; i++){
+        const si = Math.min(inp.length-1, Math.floor(i/red)*red);
+        out[i] = Math.round(inp[si]/step)*step;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('bitcrush-processor', BitcrushProcessor);
+`;
+
 // Sidechain
 let scBus=null, scAmt=0;
 function initAudio(){
@@ -428,39 +498,45 @@ function initAudio(){
   ac = new (window.AudioContext||window.webkitAudioContext)();
   comp = ac.createDynamicsCompressor();
   comp.threshold.value=-6; comp.ratio.value=4; comp.attack.value=0.002; comp.release.value=0.15;
-  
+
   // === TAPE / GRIT CHAIN ===
-  // Insert between master and compressor
   tapeInput = ac.createGain();
   tapeSat = ac.createWaveShaper();
-  tapeSat.curve = makeSatCurve(0); // init with clean
+  tapeSat.curve = makeSatCurve(0);
   tapeSat.oversample = '4x';
-  tapeBit = ac.createScriptProcessor(4096,1,1);
-  tapeBit.onaudioprocess = (e) => processBitcrush(e, 0);
+  // Start with a passthrough GainNode; swap to AudioWorklet once loaded
+  tapeBit = ac.createGain();
   tapeWow = ac.createOscillator();
-  tapeWow.type = 'sine';
-  tapeWow.frequency.value = 0.5; // slow wow
-  tapeWowGain = ac.createGain();
-  tapeWowGain.gain.value = 0;
-  tapeWow.connect(tapeWowGain);
-  tapeWow.start();
-  tapeHiss = ac.createBufferSource();
-  tapeHiss.buffer = null;
-  tapeHissGain = ac.createGain();
-  tapeHissGain.gain.value = 0;
-  // master → tapeInput → tapeSat → tapeBit → comp → destination
+  tapeWow.type = 'sine'; tapeWow.frequency.value = 0.5;
+  tapeWowGain = ac.createGain(); tapeWowGain.gain.value = 0;
+  tapeWow.connect(tapeWowGain); tapeWow.start();
+  tapeHiss = ac.createBufferSource(); tapeHiss.buffer = null;
+  tapeHissGain = ac.createGain(); tapeHissGain.gain.value = 0;
+  // master → tapeInput → tapeSat → tapeBit(passthrough) → comp → destination
   master = ac.createGain(); master.gain.value = parseFloat(volEl.value);
   master.connect(tapeInput);
   tapeInput.connect(tapeSat);
   tapeSat.connect(tapeBit);
   tapeBit.connect(comp);
   comp.connect(ac.destination);
-  
+
+  // Load AudioWorklet bitcrusher, swap in when ready
+  const blob = new Blob([BITCRUSH_WORKLET], {type:'application/javascript'});
+  const blobUrl = URL.createObjectURL(blob);
+  ac.audioWorklet.addModule(blobUrl).then(()=>{
+    URL.revokeObjectURL(blobUrl);
+    const worklet = new AudioWorkletNode(ac, 'bitcrush-processor');
+    tapeBit.disconnect();        // disconnect passthrough
+    tapeSat.connect(worklet);    // insert worklet
+    worklet.connect(comp);
+    tapeBit = worklet;
+    tapeBitReady = true;
+    updateTapeBitcrush(tapeAmt); // apply current knob value
+  }).catch(()=>{ URL.revokeObjectURL(blobUrl); /* stay on GainNode passthrough */ });
+
   // === SIDE CHAIN ===
-  // Bass/music ducking bus
-  scBus = ac.createGain();
-  scBus.gain.value = 1;
-  scBus.connect(tapeInput); // goes through tape chain
+  scBus = ac.createGain(); scBus.gain.value = 1;
+  scBus.connect(tapeInput);
   mediaDest = ac.createMediaStreamDestination();
   master.connect(mediaDest);
   const len = Math.floor(ac.sampleRate*2);
@@ -474,48 +550,33 @@ function makeSatCurve(amount){
   const n = 441, curve = new Float32Array(n);
   for(let i=0;i<n;i++){
     const x = (i/n)*2-1;
-    // soft tanh-like curve with variable drive
     curve[i] = Math.tanh(x * (1 + amount * 8)) * (1-amount*0.3);
   }
   return curve;
 }
 
-// Bitcrush processor (8-bit / downsample)
-function processBitcrush(e, amount){
-  const inp = e.inputBuffer.getChannelData(0);
-  const out = e.outputBuffer.getChannelData(0);
-  if(amount <= 0){
-    out.set(inp);
-    return;
-  }
-  const bits = Math.max(4, Math.round(16 - amount * 12)); // 16 to 4 bit
-  const step = 1 / Math.pow(2, bits - 1);
-  const down = 1 + Math.round(amount * 8); // 1x to 9x
-  for(let i=0;i<out.length;i++){
-    const srcIdx = Math.min(inp.length - 1, Math.floor(i / down) * down);
-    const s = inp[srcIdx];
-    out[i] = Math.round(s / step) * step;
-  }
+function updateTapeBitcrush(amount){
+  if(!tapeBitReady || !tapeBit.parameters) return;
+  const bits = Math.max(4, Math.round(16 - amount * 12));
+  const red  = 1 + Math.round(amount * 8);
+  tapeBit.parameters.get('bits').setValueAtTime(bits, ac.currentTime);
+  tapeBit.parameters.get('reduction').setValueAtTime(red, ac.currentTime);
 }
 
 // Update tape chain params from macro knob
 function updateTape(amount){
   if(!ac || !tapeSat) return;
   tapeSat.curve = makeSatCurve(amount);
-  tapeBit.onaudioprocess = (e) => processBitcrush(e, amount);
-  // wow/flutter intensity
-  tapeWowGain.gain.value = amount * 8; // cents of detune
-  // hiss level
+  updateTapeBitcrush(amount);
+  tapeWowGain.gain.value = amount * 8;
   if(amount > 0.3 && !tapeHiss.buffer){
     const len = ac.sampleRate * 2;
     tapeHiss.buffer = ac.createBuffer(1, len, ac.sampleRate);
     const d = tapeHiss.buffer.getChannelData(0);
     for(let i=0;i<len;i++) d[i] = (Math.random()*2-1) * 0.15;
-    tapeHiss.loop = true;
-    tapeHiss.start();
+    tapeHiss.loop = true; tapeHiss.start();
   }
   tapeHissGain.gain.value = amount * 0.06;
-  // patch hiss into chain
   if(tapeHissGain.gain.value > 0){
     if(!tapeHiss._connected){ tapeHiss.connect(tapeHissGain); tapeHissGain.connect(tapeInput); tapeHiss._connected = true; }
   }
@@ -538,61 +599,78 @@ function env(g,t,peak,dur,atk){
   g.gain.exponentialRampToValueAtTime(peak, t+(atk||0.001));
   g.gain.exponentialRampToValueAtTime(0.0003, t+dur);
 }
-function kick(t,v,L){
+// Build a per-step destination chain (pan + filter p-locks).
+// Returns the node to connect a voice's output into.
+function getStepDest(ctx, st, baseDest){
+  let d = baseDest;
+  if(st && st.filter != null && st.filter < 1){
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = 80 * Math.pow(18000/80, st.filter); // log 80Hz–18kHz
+    lpf.connect(d); d = lpf;
+  }
+  if(st && st.pan != null && st.pan !== 0){
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = st.pan;
+    pan.connect(d); d = pan;
+  }
+  return d;
+}
+
+function kick(t,v,L,dest,st){
   const o=ac.createOscillator(),g=ac.createGain(),base=f2(L.tune);
   o.type='sine';
   o.frequency.setValueAtTime(base*5,t);
   o.frequency.exponentialRampToValueAtTime(base,t+0.07);
-  const dur=0.16+L.decay*1.1;
+  const dec = (st&&st.decay!=null) ? st.decay : L.decay;
+  const dur=0.16+dec*1.1;
   env(g,t,v*L.gain,dur,0.002);
-  o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.05);
-  // Trigger sidechain duck on kick
+  o.connect(g); g.connect(dest||master); o.start(t); o.stop(t+dur+0.05);
   triggerSidechain();
 }
-function snare(t,v,L){
+function snare(t,v,L,dest){
   const n=ac.createBufferSource(); n.buffer=noiseBuf;
   const hp=ac.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1300;
   const ng=ac.createGain(); env(ng,t,v*L.gain*0.85,0.17,0.001);
-  n.connect(hp); hp.connect(ng); ng.connect(master);
+  n.connect(hp); hp.connect(ng); ng.connect(dest||master);
   const o=ac.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(185,t);
   const og=ac.createGain(); env(og,t,v*L.gain*0.5,0.11,0.001);
-  o.connect(og); og.connect(master);
+  o.connect(og); og.connect(dest||master);
   n.start(t); n.stop(t+0.2); o.start(t); o.stop(t+0.13);
 }
-function clap(t,v,L){
+function clap(t,v,L,dest){
   const bp=ac.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1100; bp.Q.value=1.3;
-  bp.connect(master);
+  bp.connect(dest||master);
   [0,0.011,0.022,0.05].forEach((off,i)=>{
     const n=ac.createBufferSource(); n.buffer=noiseBuf;
     const g=ac.createGain(); env(g,t+off,v*L.gain*(i===3?0.95:0.5),i===3?0.13:0.035,0.001);
     n.connect(g); g.connect(bp); n.start(t+off); n.stop(t+off+0.16);
   });
 }
-function hat(t,v,L,open){
+function hat(t,v,L,open,dest){
   const n=ac.createBufferSource(); n.buffer=noiseBuf;
   const hp=ac.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=7200;
   const g=ac.createGain(); const dur=open?0.26:0.038;
   env(g,t,v*L.gain,dur,0.001);
-  n.connect(hp); hp.connect(g); g.connect(master);
+  n.connect(hp); hp.connect(g); g.connect(dest||master);
   n.start(t); n.stop(t+dur+0.02);
 }
-function smp(t,v,L){
+function smp(t,v,L,dest){
   if(!L.buffer) return;
   const s=ac.createBufferSource(); s.buffer=L.buffer;
   s.playbackRate.value=Math.pow(2,(L.semis||0)/12);
   const g=ac.createGain(); g.gain.value=Math.max(v*L.gain,0.0003);
-  // Route through sidechain bus for ducking
-  const dest = scBus || master;
-  s.connect(g); g.connect(dest); s.start(t);
+  s.connect(g); g.connect(dest||scBus||master); s.start(t);
 }
 
 // 808 bass with per-lane glide — monophonic persistent osc per lane
-function bass808(t, v, L, stepIdx){
+function bass808(t, v, L, stepIdx, dest){
   const st = L.steps[stepIdx];
   const targetNote = st.note != null ? st.note : L.tune;
-  const glide = !!st.glide; // 1=portamento, 0=hard retrigger
-  const dur = 0.12 + (L.decay||0.3) * 0.4;
-  const bassDest = scBus || master;
+  const glide = !!st.glide;
+  const dec = st.decay != null ? st.decay : (L.decay||0.55);
+  const dur = 0.12 + dec * 0.4;
+  const bassDest = dest || scBus || master;
 
   if(!L._bassOsc){
     L._bassOsc = ac.createOscillator();
@@ -648,7 +726,7 @@ function grainStretch(ctx, buffer, srcStart, srcLen, t, outDur, rate, peak, dest
   }
 }
 
-function chopVoice(t,v,L,stepIdx){
+function chopVoice(t,v,L,stepIdx,dest){
   if(!L.buffer) return;
   const st=L.steps[stepIdx]; const idx=st.slice;
   if(idx<0 || idx>=L.slices.length) return;
@@ -659,7 +737,7 @@ function chopVoice(t,v,L,stepIdx){
   const rate=Math.pow(2,(L.semis||0)/12);
   const sd=stepDur();
   const win = st.roll>1 ? sd/st.roll : gateWindow(L.steps, stepIdx, sd);
-  const dest = scBus || master;
+  if(!dest) dest = scBus || master;
   const peak = Math.max(v*L.gain, 0.0003);
   if(L.warp==='stretch'){
     grainStretch(ac, L.buffer, sliceStart, sliceLen, t, win, rate, peak, dest);
@@ -677,16 +755,18 @@ function chopVoice(t,v,L,stepIdx){
   }
 }
 
-function trigger(L,t,v,stepIdx){
+function trigger(L,t,v,stepIdx,st){
+  const base = L.type==='kick'||L.type==='snare'||L.type==='clap'||L.type==='chh'||L.type==='ohh' ? master : (scBus||master);
+  const dest = getStepDest(ac, st, base);
   switch(L.type){
-    case 'kick':  kick(t,v,L); break;
-    case 'snare': snare(t,v,L); break;
-    case 'clap':  clap(t,v,L); break;
-    case 'chh':   hat(t,v,L,false); break;
-    case 'ohh':   hat(t,v,L,true);  break;
-    case 'sample':smp(t,v,L); break;
-    case 'bass808':bass808(t,v,L,stepIdx); break;
-    case 'chop':  chopVoice(t,v,L,stepIdx); break;
+    case 'kick':  kick(t,v,L,dest,st); break;
+    case 'snare': snare(t,v,L,dest); break;
+    case 'clap':  clap(t,v,L,dest); break;
+    case 'chh':   hat(t,v,L,false,dest); break;
+    case 'ohh':   hat(t,v,L,true,dest);  break;
+    case 'sample':smp(t,v,L,dest); break;
+    case 'bass808':bass808(t,v,L,stepIdx,dest); break;
+    case 'chop':  chopVoice(t,v,L,stepIdx,dest); break;
   }
 }
 
@@ -697,16 +777,18 @@ const queue=[];
 let bpm=140, swing=0;
 const stepDur = () => (60/bpm)/4;
 
-function scheduleStep(step, time, dur){
+function scheduleStep(step, time, dur, laneLength){
   for(const L of lanes){
     if(L.mute) continue;
-    const s = L.steps[step];
+    const len = L.length || 16;
+    const laneStep = step % len;
+    const s = L.steps[laneStep];
     if(s.roll > 0){
       if(s.prob < 1 && Math.random() > s.prob) continue;
       for(let i=0;i<s.roll;i++){
-        const tt = time + i*(dur/s.roll);
+        const tt = time + i*(dur/s.roll) + (i===0 ? (s._timingOffset||0) : 0);
         const vel = s.roll===1 ? s.vel : s.vel * Math.max(0.45, 1 - i*0.13);
-        trigger(L, tt, vel, step);
+        trigger(L, tt, vel, laneStep, s);
       }
     }
   }
@@ -717,7 +799,7 @@ function scheduler(){
     const dur = stepDur();
     const swingOff = (curStep % 2 === 1) ? swing*dur : 0;
     const t = nextTime + swingOff;
-    scheduleStep(curStep, t, dur);
+    scheduleStep(curStep, t, dur, STEPS);
     queue.push({step:curStep, time:t});
     nextTime += dur;
     curStep++;
@@ -840,7 +922,8 @@ function laneRow(L){
   label.append(mute,name,lvol);
 
   const stepsEl=document.createElement('div'); stepsEl.className='steps';
-  for(let s=0;s<STEPS;s++){
+  const len = L.length || 16;
+  for(let s=0;s<len;s++){
     const c=document.createElement('button');
     c.className='cell'+(s%4===0&&s>0?' beat':'')+(L.type==='chop'?' chop-cell':'')+(L.type==='bass808'?' bass-cell':'');
     c.dataset.step=s;
@@ -867,9 +950,11 @@ function laneRow(L){
   if(L.type==='kick'){
     extra.append(miniRange('Tune',24,48,1,L.tune,v=>{L.tune=v;return noteName(v);},noteName(L.tune)));
     extra.append(miniRange('Decay',0,1,0.01,L.decay,v=>{L.decay=v;return v.toFixed(2);},L.decay.toFixed(2)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='bass808'){
     extra.append(miniRange('Tune',12,60,1,L.tune||36,v=>{L.tune=v;return noteName(v);},noteName(L.tune||36)));
     extra.append(miniRange('Decay',0,1,0.01,L.decay||0.55,v=>{L.decay=v;return v.toFixed(2);},(L.decay||0.55).toFixed(2)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='sample'){
     const load=document.createElement('button'); load.className='load btn'; load.textContent='Load sample';
     const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
@@ -878,6 +963,7 @@ function laneRow(L){
     file.onchange=()=>{ if(file.files[0]) loadSample(L,file.files[0],fname); };
     extra.append(load,file,fname);
     extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='chop'){
     const load=document.createElement('button'); load.className='load btn'; load.textContent='Load loop';
     const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
@@ -892,6 +978,10 @@ function laneRow(L){
     warpBtn.onclick=()=>{ L.warp=(L.warp==='stretch'?'gate':'stretch'); setWarpLbl(); };
     extra.append(load,file,fname,editBtn,warpBtn);
     extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+  } else {
+    // snare, clap, chh, ohh - basic drum lanes
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
   }
 
   row.append(label,stepsEl,extra);
@@ -969,6 +1059,31 @@ function showStepCtrl(cell, st, chop, L){
   } else { ctrlNoteRow.style.display='none'; ctrlGlideRow.style.display='none'; }
   ctrlVel.value=st.vel; ctrlVelV.textContent=Math.round(st.vel*100)+'%';
   ctrlProb.value=st.prob; ctrlProbV.textContent=Math.round(st.prob*100)+'%';
+  
+  // Show p-lock rows based on lane type
+  const isKick = L && (L.type==='kick');
+  const isSample = L && (L.type==='sample' || L.type==='chop');
+  const showDecay = isKick || isBass;
+  const showPan = isSample;
+  const showFilter = isSample;
+  
+  if(showDecay){
+    ctrlDecayRow.style.display='';
+    ctrlDecay.value = st.decay!=null ? st.decay : (L.decay||0.5);
+    ctrlDecayV.textContent = parseFloat(ctrlDecay.value).toFixed(2);
+  } else { ctrlDecayRow.style.display='none'; }
+  if(showPan){
+    ctrlPanRow.style.display='';
+    ctrlPan.value = st.pan!=null ? st.pan : 0;
+    const panVal = parseFloat(ctrlPan.value);
+    ctrlPanV.textContent = panVal===0?'C':(panVal<0?'L'+Math.abs(Math.round(panVal*100)):'R'+Math.round(panVal*100));
+  } else { ctrlPanRow.style.display='none'; }
+  if(showFilter){
+    ctrlFilterRow.style.display='';
+    ctrlFilter.value = st.filter!=null ? st.filter : 1;
+    ctrlFilterV.textContent = Math.round(parseFloat(ctrlFilter.value)*100)+'%';
+  } else { ctrlFilterRow.style.display='none'; }
+  
   const r=cell.getBoundingClientRect();
   stepCtrl.style.left = Math.min(r.left, window.innerWidth-220)+'px';
   stepCtrl.style.top  = (r.bottom+5)+'px';
@@ -1004,6 +1119,41 @@ ctrlProb.oninput=()=>{
   activeStep.prob=parseFloat(ctrlProb.value);
   ctrlProbV.textContent=Math.round(activeStep.prob*100)+'%';
   if(activeCell) refreshCellVis(activeCell,activeStep,activeChop,activeLane);
+};
+ctrlDecay.oninput=()=>{
+  if(!activeStep) return;
+  activeStep.decay=parseFloat(ctrlDecay.value);
+  ctrlDecayV.textContent=activeStep.decay.toFixed(2);
+};
+ctrlPan.oninput=()=>{
+  if(!activeStep) return;
+  activeStep.pan=parseFloat(ctrlPan.value);
+  const pv = activeStep.pan;
+  ctrlPanV.textContent = pv===0?'C':(pv<0?'L'+Math.abs(Math.round(pv*100)):'R'+Math.round(pv*100));
+};
+ctrlFilter.oninput=()=>{
+  if(!activeStep) return;
+  activeStep.filter=parseFloat(ctrlFilter.value);
+  ctrlFilterV.textContent=Math.round(activeStep.filter*100)+'%';
+};
+ctrlEuHits.oninput=()=>{ ctrlEuHitsV.textContent=ctrlEuHits.value; };
+ctrlEuBtn.onclick=()=>{
+  if(!activeLane) return;
+  const hits = parseInt(ctrlEuHits.value);
+  const len = activeLane.length || 16;
+  const pattern = euclidean(hits, len);
+  activeLane.steps.forEach((s,i) => { s.roll = pattern[i] || 0; });
+  rebuildGrid();
+};
+ctrlHumanizeBtn.onclick=()=>{
+  if(!activeLane) return;
+  activeLane.steps.forEach(s => {
+    if(s.roll>0){
+      s._timingOffset = (Math.random()-0.5)*0.08;
+      s.vel = Math.max(0.1, Math.min(1, s.vel + (Math.random()-0.5)*0.15));
+    }
+  });
+  rebuildGrid();
 };
 document.addEventListener('pointerdown',(e)=>{
   if(stepCtrl.classList.contains('show') && !stepCtrl.contains(e.target)){
@@ -1074,7 +1224,7 @@ document.getElementById('addLane').onclick=()=>{
   const name='Sample '+smpCounter;
   patterns.forEach(p=>{
     if(!p.lanes.find(l=>l.id===id)){
-      p.lanes.push({id,name,type:'sample',gain:0.85,mute:false,buffer:null,semis:0,fname:null,
+      p.lanes.push({id,name,type:'sample',gain:0.85,mute:false,buffer:null,semis:0,fname:null,length:16,
         steps:stepsFrom(new Array(STEPS).fill(0))});
     }
   });
@@ -1088,7 +1238,7 @@ document.getElementById('addBass').onclick=()=>{
   const name='Bass '+bassCounter;
   patterns.forEach(p=>{
     if(!p.lanes.find(l=>l.id===id)){
-      p.lanes.push({id,name,type:'bass808',gain:0.85,mute:false,tune:36,decay:0.55,
+      p.lanes.push({id,name,type:'bass808',gain:0.85,mute:false,tune:36,decay:0.55,length:16,
         steps:stepsFrom(new Array(STEPS).fill(0))});
     }
   });
@@ -1103,7 +1253,7 @@ document.getElementById('addChop').onclick=()=>{
   patterns.forEach(p=>{
     if(!p.lanes.find(l=>l.id===id)){
       p.lanes.push({id,name,type:'chop',gain:0.85,mute:false,buffer:null,fname:null,
-        slices:[0],warp:'gate',semis:0,
+        slices:[0],warp:'gate',semis:0,length:16,
         steps:stepsFrom(new Array(STEPS).fill(0))});
     }
   });
@@ -1159,46 +1309,47 @@ document.getElementById('export').onclick=async()=>{
       g.gain.exponentialRampToValueAtTime(peak,t+(atk||0.001));
       g.gain.exponentialRampToValueAtTime(0.0003,t+dur);
     }
-    function kickO(t,v,L){
+    function kickO(t,v,L,dest,st){
       const o=offline.createOscillator(),g=offline.createGain(),base=f2(L.tune);
       o.type='sine'; o.frequency.setValueAtTime(base*5,t); o.frequency.exponentialRampToValueAtTime(base,t+0.07);
-      const dur=0.16+L.decay*1.1; envO(g,t,v*L.gain,dur,0.002);
-      o.connect(g); g.connect(mOff); o.start(t); o.stop(t+dur+0.05);
+      const dec=(st&&st.decay!=null)?st.decay:L.decay;
+      const dur=0.16+dec*1.1; envO(g,t,v*L.gain,dur,0.002);
+      o.connect(g); g.connect(dest||mOff); o.start(t); o.stop(t+dur+0.05);
     }
-    function snareO(t,v,L){
+    function snareO(t,v,L,dest){
       const n=offline.createBufferSource(); n.buffer=nOff;
       const hp=offline.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1300;
       const ng=offline.createGain(); envO(ng,t,v*L.gain*0.85,0.17,0.001);
-      n.connect(hp); hp.connect(ng); ng.connect(mOff);
+      n.connect(hp); hp.connect(ng); ng.connect(dest||mOff);
       const o=offline.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(185,t);
       const og=offline.createGain(); envO(og,t,v*L.gain*0.5,0.11,0.001);
-      o.connect(og); og.connect(mOff);
+      o.connect(og); og.connect(dest||mOff);
       n.start(t); n.stop(t+0.2); o.start(t); o.stop(t+0.13);
     }
-    function clapO(t,v,L){
+    function clapO(t,v,L,dest){
       const bp=offline.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=1100; bp.Q.value=1.3;
-      bp.connect(mOff);
+      bp.connect(dest||mOff);
       [0,0.011,0.022,0.05].forEach((off,i)=>{
         const n=offline.createBufferSource(); n.buffer=nOff;
         const g=offline.createGain(); envO(g,t+off,v*L.gain*(i===3?0.95:0.5),i===3?0.13:0.035,0.001);
         n.connect(g); g.connect(bp); n.start(t+off); n.stop(t+off+0.16);
       });
     }
-    function hatO(t,v,L,open){
+    function hatO(t,v,L,open,dest){
       const n=offline.createBufferSource(); n.buffer=nOff;
       const hp=offline.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=7200;
       const g=offline.createGain(); const dur=open?0.26:0.038;
-      envO(g,t,v*L.gain,dur,0.001); n.connect(hp); hp.connect(g); g.connect(mOff);
+      envO(g,t,v*L.gain,dur,0.001); n.connect(hp); hp.connect(g); g.connect(dest||mOff);
       n.start(t); n.stop(t+dur+0.02);
     }
-    function smpO(t,v,L){
+    function smpO(t,v,L,dest){
       if(!L.buffer) return;
       const s=offline.createBufferSource(); s.buffer=L.buffer;
       s.playbackRate.value=Math.pow(2,(L.semis||0)/12);
       const g=offline.createGain(); g.gain.value=Math.max(v*L.gain,0.0003);
-      s.connect(g); g.connect(mOff); s.start(t);
+      s.connect(g); g.connect(dest||mOff); s.start(t);
     }
-    function chopO(t,v,L,stepIdx){
+    function chopO(t,v,L,stepIdx,dest){
       if(!L.buffer) return;
       const st=L.steps[stepIdx]; const idx=st.slice;
       if(idx<0 || idx>=L.slices.length) return;
@@ -1211,7 +1362,7 @@ document.getElementById('export').onclick=async()=>{
       const win = st.roll>1 ? sd/st.roll : gateWindow(L.steps, stepIdx, sd);
       const peak=Math.max(v*L.gain,0.0003);
       if(L.warp==='stretch'){
-        grainStretch(offline, L.buffer, sliceStart, sliceLen, t, win, rate, peak, mOff);
+        grainStretch(offline, L.buffer, sliceStart, sliceLen, t, win, rate, peak, dest||mOff);
       } else {
         const s=offline.createBufferSource(); s.buffer=L.buffer; s.playbackRate.value=rate;
         const g=offline.createGain();
@@ -1221,7 +1372,7 @@ document.getElementById('export').onclick=async()=>{
         g.gain.linearRampToValueAtTime(peak,t+0.002);
         g.gain.setValueAtTime(peak, Math.max(t+0.002, endT-0.005));
         g.gain.linearRampToValueAtTime(0.0003,endT);
-        s.connect(g); g.connect(mOff);
+        s.connect(g); g.connect(dest||mOff);
         s.start(t, sliceStart, playLen); s.stop(endT+0.02);
       }
     }
@@ -1252,12 +1403,14 @@ document.getElementById('export').onclick=async()=>{
       state.gain.gain.exponentialRampToValueAtTime(0.0003,t+dur);
       state.lastFreq=targetFreq;
     }
-    function trigO(L,t,v,stepIdx){
+    function trigO(L,t,v,stepIdx,st){
+      const base = (L.type==='kick'||L.type==='snare'||L.type==='clap'||L.type==='chh'||L.type==='ohh') ? mOff : mOff;
+      const dest = getStepDest(offline, st, base);
       switch(L.type){
-        case 'kick': kickO(t,v,L); break; case 'snare': snareO(t,v,L); break;
-        case 'clap': clapO(t,v,L); break; case 'chh':  hatO(t,v,L,false); break;
-        case 'ohh':  hatO(t,v,L,true); break; case 'sample': smpO(t,v,L); break;
-        case 'chop': chopO(t,v,L,stepIdx); break; case 'bass808': bass808O(t,v,L,stepIdx); break;
+        case 'kick': kickO(t,v,L,dest,st); break; case 'snare': snareO(t,v,L,dest); break;
+        case 'clap': clapO(t,v,L,dest); break; case 'chh':  hatO(t,v,L,false,dest); break;
+        case 'ohh':  hatO(t,v,L,true,dest); break; case 'sample': smpO(t,v,L,dest); break;
+        case 'chop': chopO(t,v,L,stepIdx,dest); break; case 'bass808': bass808O(t,v,L,stepIdx); break;
       }
     }
 
@@ -1272,7 +1425,7 @@ document.getElementById('export').onclick=async()=>{
           for(let i=0;i<s.roll;i++){
             const tt=time+i*(dur/s.roll);
             const vel=s.roll===1?s.vel:s.vel*Math.max(0.45,1-i*0.13);
-            trigO(L,tt,vel,step);
+            trigO(L,tt,vel,step,s);
           }
         }
       }
