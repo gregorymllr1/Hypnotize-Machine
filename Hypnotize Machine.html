@@ -1141,11 +1141,39 @@ document.getElementById('export').onclick=async()=>{
       const g=offline.createGain(); g.gain.value=Math.max(v*L.gain,0.0003);
       s.connect(g); g.connect(mOff); s.start(t);
     }
-    function trigO(L,t,v){
+    function chopO(t,v,L,stepIdx){
+      if(!L.buffer) return;
+      const st=L.steps[stepIdx]; const idx=st.slice;
+      if(idx<0 || idx>=L.slices.length) return;
+      const dur=L.buffer.duration;
+      const sliceStart=L.slices[idx]*dur;
+      const sliceEnd=(idx+1<L.slices.length?L.slices[idx+1]:1)*dur;
+      const sliceLen=Math.max(0.005, sliceEnd-sliceStart);
+      const rate=Math.pow(2,(L.semis||0)/12);
+      const sd=stepDur();
+      const win = st.roll>1 ? sd/st.roll : gateWindow(L.steps, stepIdx, sd);
+      const peak=Math.max(v*L.gain,0.0003);
+      if(L.warp==='stretch'){
+        grainStretch(offline, L.buffer, sliceStart, sliceLen, t, win, rate, peak, mOff);
+      } else {
+        const s=offline.createBufferSource(); s.buffer=L.buffer; s.playbackRate.value=rate;
+        const g=offline.createGain();
+        const playLen=Math.min(sliceLen, win*rate);
+        const endT=t+playLen/rate;
+        g.gain.setValueAtTime(0.0003,t);
+        g.gain.linearRampToValueAtTime(peak,t+0.002);
+        g.gain.setValueAtTime(peak, Math.max(t+0.002, endT-0.005));
+        g.gain.linearRampToValueAtTime(0.0003,endT);
+        s.connect(g); g.connect(mOff);
+        s.start(t, sliceStart, playLen); s.stop(endT+0.02);
+      }
+    }
+    function trigO(L,t,v,stepIdx){
       switch(L.type){
         case 'kick': kickO(t,v,L); break; case 'snare': snareO(t,v,L); break;
         case 'clap': clapO(t,v,L); break; case 'chh':  hatO(t,v,L,false); break;
         case 'ohh':  hatO(t,v,L,true); break; case 'sample': smpO(t,v,L); break;
+        case 'chop': chopO(t,v,L,stepIdx); break;
       }
     }
 
@@ -1160,7 +1188,7 @@ document.getElementById('export').onclick=async()=>{
           for(let i=0;i<s.roll;i++){
             const tt=time+i*(dur/s.roll);
             const vel=s.roll===1?s.vel:s.vel*Math.max(0.45,1-i*0.13);
-            trigO(L,tt,vel);
+            trigO(L,tt,vel,step);
           }
         }
       }
@@ -1219,11 +1247,14 @@ document.getElementById('midiExport').onclick=()=>{
 
   for(const L of lanes){
     if(L.mute) continue;
-    const note=L.type==='sample'?SMP_NOTES[smpIdx++%SMP_NOTES.length]:DRUM_NOTE[L.type];
-    if(note==null) continue;
+    const isChop=L.type==='chop';
+    const baseNote=isChop?60:(L.type==='sample'?SMP_NOTES[smpIdx++%SMP_NOTES.length]:DRUM_NOTE[L.type]);
+    if(baseNote==null) continue;
     for(let s=0;s<STEPS;s++){
       const st=L.steps[s];
       if(st.roll===0) continue;
+      if(isChop && st.slice<0) continue;
+      const note=isChop?Math.max(0,Math.min(127,baseNote+st.slice)):baseNote;
       for(let i=0;i<st.roll;i++){
         const baseTick=s*tickStep;
         const swTicks=(s%2===1)?Math.round(swing*tickStep):0;
@@ -1308,7 +1339,8 @@ function saveCurrentPattern(){
         steps:L.steps.map(s=>({...s})),
         gain:L.gain, mute:L.mute,
         tune:L.tune, decay:L.decay,
-        semis:L.semis||0, fname:L.fname||null
+        semis:L.semis||0, fname:L.fname||null,
+        slices:L.slices?[...L.slices]:undefined, warp:L.warp||undefined
       }))
     })),
     songSeq:[...songSeq], songMode
@@ -1334,7 +1366,9 @@ function loadPattern(name){
       lanes:pat.lanes.map(L=>({
         ...L,
         steps:L.steps.map(coerceStep),
-        buffer:null
+        buffer:null,
+        slices: L.type==='chop' ? (L.slices&&L.slices.length?[...L.slices]:[0]) : L.slices,
+        warp:  L.type==='chop' ? (L.warp||'gate') : L.warp
       }))
     }));
     songSeq=p.songSeq||[0];
