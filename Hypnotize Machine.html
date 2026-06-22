@@ -1683,6 +1683,26 @@ document.getElementById('exportSettings').onclick=()=>{
   downloadBlob(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}), fname);
 };
 
+document.getElementById('importSettings').onclick=()=>document.getElementById('importFile').click();
+document.getElementById('importFile').onchange=(e)=>{
+  const f=e.target.files[0]; if(!f){ return; }
+  f.text().then(txt=>{
+    let obj;
+    try{ obj=JSON.parse(txt); }catch(_){ alert('Not a valid Hypnotize settings file'); return; }
+    if(!obj || typeof obj!=='object' || (!obj.patterns && !obj.lanes)){ alert('Not a valid Hypnotize settings file'); return; }
+    applySettings(obj);
+    const name=((obj.meta&&obj.meta.title) || f.name.replace(/\.hypnotize\.json$/i,'').replace(/\.json$/i,'') || 'imported').trim() || 'imported';
+    try{
+      const saves=getStoredPatterns();
+      saves[name]=buildSettings(name);
+      saveStoredPatterns(saves);
+      updatePresetDropdown();
+      document.getElementById('loadPreset').value=name;
+    }catch(err){ alert('Imported, but could not save to library: '+err.message); }
+  });
+  e.target.value='';
+};
+
 // --- keyboard ---
 document.addEventListener('keydown',e=>{
   if(e.code==='Space'&&!['INPUT','BUTTON','SELECT','TEXTAREA'].includes(e.target.tagName)){
