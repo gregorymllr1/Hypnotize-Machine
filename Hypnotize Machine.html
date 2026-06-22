@@ -239,6 +239,9 @@
           <option value="">Load...</option>
         </select>
         <button id="delete" class="btn" title="Delete selected">×</button>
+        <button id="exportSettings" class="btn" title="Export settings to a .json file">Export File</button>
+        <button id="importSettings" class="btn" title="Import settings from a .json file">Import File</button>
+        <input id="importFile" type="file" accept=".json,application/json" style="display:none">
       </div>
     </header>
 
@@ -1671,6 +1674,14 @@ function deletePattern(){
 document.getElementById('save').onclick=saveCurrentPattern;
 document.getElementById('loadPreset').onchange=(e)=>{ if(e.target.value) loadPattern(e.target.value); };
 document.getElementById('delete').onclick=deletePattern;
+
+document.getElementById('exportSettings').onclick=()=>{
+  const currentTitle = document.getElementById('loadPreset').value || 'untitled';
+  const title = ((prompt('Settings file name:', currentTitle) || '').trim()) || 'untitled';
+  const obj = buildSettings(title);
+  const fname = (title.toLowerCase().replace(/[^a-z0-9-_]+/g,'-').replace(/^-+|-+$/g,'') || 'untitled') + '.hypnotize.json';
+  downloadBlob(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}), fname);
+};
 
 // --- keyboard ---
 document.addEventListener('keydown',e=>{
