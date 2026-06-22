@@ -1583,6 +1583,15 @@ function buildSettings(title){
   };
 }
 
+// Clamp a lane length to a sane range and pad/keep its steps so steps.length >= length
+// (a settings file or generated arrangement with too-few steps must not crash the grid).
+function clampLen(n){ return Math.max(1, Math.min(64, Math.round(n||16))); }
+function padStepsTo(steps, len){
+  const out = steps.slice();
+  while(out.length < len) out.push(makeStep(0));
+  return out;
+}
+
 function applySettings(obj){
   if(!obj) return;
   bpm=obj.bpm||140; swing=obj.swing||0;
@@ -1603,19 +1612,25 @@ function applySettings(obj){
   if((obj.version===2||obj.version===3)&&obj.patterns){
     patterns=obj.patterns.map(pat=>({
       name:pat.name,
-      lanes:pat.lanes.map(L=>({
-        ...L,
-        steps:L.steps.map(coerceStep),
-        buffer:null,
-        slices: L.type==='chop' ? (L.slices&&L.slices.length?[...L.slices]:[0]) : L.slices,
-        warp:  L.type==='chop' ? (L.warp||'gate') : L.warp,
-        length: L.length||16
-      }))
+      lanes:pat.lanes.map(L=>{
+        const len=clampLen(L.length);
+        return {
+          ...L,
+          length: len,
+          steps: padStepsTo((L.steps||[]).map(coerceStep), len),
+          buffer:null,
+          slices: L.type==='chop' ? (L.slices&&L.slices.length?[...L.slices]:[0]) : L.slices,
+          warp:  L.type==='chop' ? (L.warp||'gate') : L.warp
+        };
+      })
     }));
     songSeq=obj.songSeq||[0];
     songMode=obj.songMode||false;
   } else {
-    const rawLanes=(obj.lanes||[]).map(L=>({...L,steps:(L.steps||[]).map(coerceStep),buffer:null,length:L.length||16}));
+    const rawLanes=(obj.lanes||[]).map(L=>{
+      const len=clampLen(L.length);
+      return {...L, length:len, steps:padStepsTo((L.steps||[]).map(coerceStep), len), buffer:null};
+    });
     patterns=[{name:'A', lanes:rawLanes.length?rawLanes:defaultLanes()}];
     songSeq=[0]; songMode=false;
   }
