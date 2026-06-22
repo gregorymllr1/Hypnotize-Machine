@@ -616,6 +616,60 @@ function bass808(t, v, L, stepIdx){
   lastBassNote = targetNote;
 }
 
+function gateWindow(steps, stepIdx, sd){
+  for(let k=1;k<=STEPS;k++){
+    const s=steps[(stepIdx+k)%STEPS];
+    if(s.roll>0 && s.slice>=0) return k*sd;
+  }
+  return STEPS*sd;
+}
+
+function grainStretch(ctx, buffer, srcStart, srcLen, t, outDur, rate, peak, dest){
+  const grain=0.08, hop=grain/2;
+  const nG=Math.max(1,Math.min(200,Math.ceil(outDur/hop)));
+  for(let k=0;k<nG;k++){
+    const og=k*hop; if(og>=outDur+hop) break;
+    const sp=srcStart + (outDur>0?(og/outDur):0)*srcLen;
+    const s=ctx.createBufferSource(); s.buffer=buffer; s.playbackRate.value=rate;
+    const g=ctx.createGain(); const a=grain/2; const start=t+og;
+    g.gain.setValueAtTime(0.0001,start);
+    g.gain.linearRampToValueAtTime(peak,start+a);
+    g.gain.linearRampToValueAtTime(0.0001,start+grain);
+    s.connect(g); g.connect(dest);
+    s.start(start, Math.min(sp, buffer.duration-0.001), grain*rate);
+    s.stop(start+grain+0.02);
+  }
+}
+
+function chopVoice(t,v,L,stepIdx){
+  if(!L.buffer) return;
+  const st=L.steps[stepIdx]; const idx=st.slice;
+  if(idx<0 || idx>=L.slices.length) return;
+  const dur=L.buffer.duration;
+  const sliceStart=L.slices[idx]*dur;
+  const sliceEnd=(idx+1<L.slices.length?L.slices[idx+1]:1)*dur;
+  const sliceLen=Math.max(0.005, sliceEnd-sliceStart);
+  const rate=Math.pow(2,(L.semis||0)/12);
+  const sd=stepDur();
+  const win = st.roll>1 ? sd/st.roll : gateWindow(L.steps, stepIdx, sd);
+  const dest = scBus || master;
+  const peak = Math.max(v*L.gain, 0.0003);
+  if(L.warp==='stretch'){
+    grainStretch(ac, L.buffer, sliceStart, sliceLen, t, win, rate, peak, dest);
+  } else {
+    const s=ac.createBufferSource(); s.buffer=L.buffer; s.playbackRate.value=rate;
+    const g=ac.createGain();
+    const playLen=Math.min(sliceLen, win*rate);
+    const endT=t+playLen/rate;
+    g.gain.setValueAtTime(0.0003,t);
+    g.gain.linearRampToValueAtTime(peak,t+0.002);
+    g.gain.setValueAtTime(peak, Math.max(t+0.002, endT-0.005));
+    g.gain.linearRampToValueAtTime(0.0003,endT);
+    s.connect(g); g.connect(dest);
+    s.start(t, sliceStart, playLen); s.stop(endT+0.02);
+  }
+}
+
 function trigger(L,t,v,stepIdx){
   switch(L.type){
     case 'kick':  kick(t,v,L); break;
@@ -625,6 +679,7 @@ function trigger(L,t,v,stepIdx){
     case 'ohh':   hat(t,v,L,true);  break;
     case 'sample':smp(t,v,L); break;
     case 'bass808':bass808(t,v,L,stepIdx); break;
+    case 'chop':  chopVoice(t,v,L,stepIdx); break;
   }
 }
 
@@ -644,7 +699,7 @@ function scheduleStep(step, time, dur){
       for(let i=0;i<s.roll;i++){
         const tt = time + i*(dur/s.roll);
         const vel = s.roll===1 ? s.vel : s.vel * Math.max(0.45, 1 - i*0.13);
-        trigger(L, tt, vel);
+        trigger(L, tt, vel, step);
       }
     }
   }
@@ -696,6 +751,7 @@ function draw(){
     }
   }
   setPlayhead(drawStep);
+  if(chopEditor.classList.contains('show') && playing) drawChopEditor();
   if(playing) requestAnimationFrame(draw);
 }
 
