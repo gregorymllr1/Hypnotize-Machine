@@ -249,6 +249,7 @@
         <input id="sc" type="range" min="0" max="1" step="0.01" value="0">
       </div>
       <button id="addLane" class="btn">+ Lane</button>
+      <button id="addChop" class="btn">+ Chop</button>
       <button id="clear" class="btn" style="margin-left:auto">Clear</button>
     </div>
 
@@ -753,6 +754,20 @@ function laneRow(L){
     file.onchange=()=>{ if(file.files[0]) loadSample(L,file.files[0],fname); };
     extra.append(load,file,fname);
     extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
+  } else if(L.type==='chop'){
+    const load=document.createElement('button'); load.className='load btn'; load.textContent='Load loop';
+    const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
+    const fname=document.createElement('span'); fname.className='fname'; fname.textContent=L.fname||'no loop';
+    load.onclick=()=>file.click();
+    file.onchange=()=>{ if(file.files[0]) loadChopLoop(L,file.files[0],fname); };
+    const editBtn=document.createElement('button'); editBtn.className='btn'; editBtn.textContent='Edit slices ▾';
+    editBtn.onclick=()=>toggleChopEditor(L);
+    const warpBtn=document.createElement('button'); warpBtn.className='btn warp-btn';
+    const setWarpLbl=()=>{ warpBtn.textContent='Warp: '+(L.warp==='stretch'?'Stretch':'Gate'); warpBtn.classList.toggle('on',L.warp==='stretch'); };
+    setWarpLbl();
+    warpBtn.onclick=()=>{ L.warp=(L.warp==='stretch'?'gate':'stretch'); setWarpLbl(); };
+    extra.append(load,file,fname,editBtn,warpBtn);
+    extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
   }
 
   row.append(label,stepsEl,extra);
@@ -774,6 +789,20 @@ function loadSample(L,file,fnameEl){
   file.arrayBuffer().then(buf=>{
     ac.decodeAudioData(buf.slice(0),
       decoded=>{ L.buffer=decoded; L.fname=file.name; fnameEl.textContent=file.name; },
+      ()=>{ fnameEl.textContent='could not decode'; });
+  });
+}
+
+function loadChopLoop(L,file,fnameEl){
+  initAudio();
+  fnameEl.textContent='decoding…';
+  file.arrayBuffer().then(buf=>{
+    ac.decodeAudioData(buf.slice(0),
+      decoded=>{ L.buffer=decoded; L.fname=file.name; fnameEl.textContent=file.name;
+        if(!L.slices||!L.slices.length) L.slices=[0];
+        if(typeof wfCache!=='undefined') wfCache.id=null;
+        if(typeof chopEditorLaneId!=='undefined' && chopEditorLaneId===L.id) drawChopEditor();
+      },
       ()=>{ fnameEl.textContent='could not decode'; });
   });
 }
@@ -850,7 +879,8 @@ document.getElementById('addPat').onclick=()=>{
   const newLanes=lanes.map(L=>({
     ...L,
     steps:stepsFrom(new Array(STEPS).fill(0)),
-    buffer:null, fname:null
+    buffer:null, fname:null,
+    slices: L.type==='chop' ? [0] : L.slices
   }));
   patterns.push({name, lanes:newLanes});
   buildPatBtns();
@@ -876,6 +906,21 @@ document.getElementById('addLane').onclick=()=>{
   patterns.forEach(p=>{
     if(!p.lanes.find(l=>l.id===id)){
       p.lanes.push({id,name,type:'sample',gain:0.85,mute:false,buffer:null,semis:0,fname:null,
+        steps:stepsFrom(new Array(STEPS).fill(0))});
+    }
+  });
+  rebuildGrid();
+};
+
+// --- add chop lane ---
+document.getElementById('addChop').onclick=()=>{
+  chopCounter++;
+  const id='chop'+chopCounter;
+  const name='Chop '+chopCounter;
+  patterns.forEach(p=>{
+    if(!p.lanes.find(l=>l.id===id)){
+      p.lanes.push({id,name,type:'chop',gain:0.85,mute:false,buffer:null,fname:null,
+        slices:[0],warp:'gate',semis:0,
         steps:stepsFrom(new Array(STEPS).fill(0))});
     }
   });
@@ -1180,6 +1225,9 @@ function loadPattern(name){
   smpCounter=patterns.flatMap(p=>p.lanes)
     .filter(l=>l.type==='sample')
     .reduce((mx,l)=>{ const n=parseInt(l.id.replace('smp',''))||0; return Math.max(mx,n); },2);
+  chopCounter=patterns.flatMap(p=>p.lanes)
+    .filter(l=>l.type==='chop')
+    .reduce((mx,l)=>{ const n=parseInt((l.id||'').replace('chop',''))||0; return Math.max(mx,n); },1);
 
   const songBtn=document.getElementById('songToggle');
   songBtn.textContent=songMode?'On':'Off'; songBtn.classList.toggle('on',songMode);
