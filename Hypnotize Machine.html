@@ -311,9 +311,9 @@ const NOTE = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const noteName = m => NOTE[(m%12+12)%12] + (Math.floor(m/12)-1);
 
 // --- step model ---
-function makeStep(roll=0){ return {roll, vel:1.0, prob:1.0, glide:1, note:36}; }
+function makeStep(roll=0){ return {roll, vel:1.0, prob:1.0, glide:1, note:36, slice:-1}; }
 function stepsFrom(arr){ return arr.map(r => makeStep(r)); }
-function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36}; }
+function coerceStep(s){ return (typeof s === 'number') ? makeStep(s) : {roll:s.roll||0, vel:s.vel!=null?s.vel:1, prob:s.prob!=null?s.prob:1, glide:s.glide!=null?s.glide:1, note:s.note!=null?s.note:36, slice:s.slice!=null?s.slice:-1}; }
 
 function defaultLanes(){
   return [
@@ -331,6 +331,9 @@ function defaultLanes(){
      steps:stepsFrom(new Array(STEPS).fill(0))},
     {id:'smp2', name:'Sample 2',  type:'sample',gain:0.85, mute:false, buffer:null, semis:0, fname:null,
      steps:stepsFrom(new Array(STEPS).fill(0))},
+    {id:'chop1', name:'Chop 1', type:'chop', gain:0.85, mute:false, buffer:null, fname:null,
+     slices:[0], warp:'gate', semis:0,
+     steps:stepsFrom(new Array(STEPS).fill(0))},
   ];
 }
 
@@ -347,6 +350,7 @@ let pendingPatSwitch = -1;
 
 // next sample lane number (default lanes have smp1 and smp2)
 let smpCounter = 2;
+let chopCounter = 1;
 
 // --- DOM refs (read before initAudio which also uses volEl) ---
 const gridEl  = document.getElementById('grid');
