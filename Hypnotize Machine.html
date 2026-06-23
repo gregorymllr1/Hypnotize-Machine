@@ -2222,7 +2222,7 @@ function classifyOnsetLane(t, bands, duration){
     {type:'snare',  score:bandEnergyAt(t,bands,duration,['lowmid'])},
     {type:'chh',    score:bandEnergyAt(t,bands,duration,['high'])},
     {type:'clap',   score:bandEnergyAt(t,bands,duration,['highmid'])*0.9},
-    {type:'ohh',    score:bandEnergyAt(t,bands,duration,['high'])*0.55},
+    {type:'ohh',    score:bandEnergyAt(t,bands,duration,['high'])*0.65+bandEnergyAt(t,bands,duration,['highmid'])*0.45},
   ];
   scores.sort((a,b)=>b.score-a.score);
   return scores[0].score>0.02 ? scores[0].type : 'snare';
@@ -2349,6 +2349,17 @@ function populateGridFromAnalysis(report, opts={}){
   bpmEl.value=newBpm;
   document.getElementById('bpmval').textContent=newBpm;
   document.getElementById('bpmlbl').textContent=newBpm;
+
+  swing=0; swingEl.value=0;
+  document.getElementById('swinglbl').textContent='0%';
+
+  tapeAmt=0.15; tapeEl.value=0.15;
+  document.getElementById('tapelbl').textContent='15%';
+  if(ac) updateTape(0.15);
+
+  const hasBass=report.bands.some(b=>(b.name==='sub'||b.name==='low')&&b.entranceSec!=null);
+  scAmt=hasBass?0.3:0; scEl.value=scAmt;
+  document.getElementById('sclbl').textContent=Math.round(scAmt*100)+'%';
 
   const songBtn=document.getElementById('songToggle');
   songBtn.textContent=songMode?'On':'Off';
