@@ -989,11 +989,11 @@ function laneRow(L){
   if(L.type==='kick'){
     extra.append(miniRange('Tune',24,48,1,L.tune,v=>{L.tune=v;return noteName(v);},noteName(L.tune)));
     extra.append(miniRange('Decay',0,1,0.01,L.decay,v=>{L.decay=v;return v.toFixed(2);},L.decay.toFixed(2)));
-    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;L.steps=padStepsTo(L.steps,v);rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='bass808'){
     extra.append(miniRange('Tune',12,60,1,L.tune||36,v=>{L.tune=v;return noteName(v);},noteName(L.tune||36)));
     extra.append(miniRange('Decay',0,1,0.01,L.decay||0.55,v=>{L.decay=v;return v.toFixed(2);},(L.decay||0.55).toFixed(2)));
-    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;L.steps=padStepsTo(L.steps,v);rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='sample'){
     const load=document.createElement('button'); load.className='load btn'; load.textContent='Load sample';
     const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
@@ -1002,7 +1002,7 @@ function laneRow(L){
     file.onchange=()=>{ if(file.files[0]) loadSample(L,file.files[0],fname); };
     extra.append(load,file,fname);
     extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
-    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;L.steps=padStepsTo(L.steps,v);rebuildGrid();return v;},String(L.length||16)));
   } else if(L.type==='chop'){
     const load=document.createElement('button'); load.className='load btn'; load.textContent='Load loop';
     const file=document.createElement('input'); file.type='file'; file.accept='audio/*'; file.style.display='none';
@@ -1017,10 +1017,10 @@ function laneRow(L){
     warpBtn.onclick=()=>{ L.warp=(L.warp==='stretch'?'gate':'stretch'); setWarpLbl(); };
     extra.append(load,file,fname,editBtn,warpBtn);
     extra.append(miniRange('Pitch',-12,12,1,L.semis||0,v=>{L.semis=v;return (v>0?'+':'')+v;},(L.semis||0)>0?'+'+(L.semis||0):String(L.semis||0)));
-    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;L.steps=padStepsTo(L.steps,v);rebuildGrid();return v;},String(L.length||16)));
   } else {
     // snare, clap, chh, ohh - basic drum lanes
-    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;rebuildGrid();return v;},String(L.length||16)));
+    extra.append(miniRange('Len',1,32,1,L.length||16,v=>{L.length=v;L.steps=padStepsTo(L.steps,v);rebuildGrid();return v;},String(L.length||16)));
   }
 
   row.append(label,stepsEl,extra);
