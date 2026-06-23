@@ -206,6 +206,22 @@
   .chop-hint{font-size:10px;color:var(--trim-dim);letter-spacing:.06em;}
   .warp-btn.on{background:#1a3520;border-color:#3a6040;color:#7ac97a;}
 
+  /* audio analysis panel */
+  .analyze-panel{display:none;flex-direction:column;gap:10px;padding:14px 18px;
+    border-top:1px solid var(--line);background:rgba(0,0,0,.20);}
+  .analyze-panel.show{display:flex;}
+  .analyze-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .analyze-title{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--trim);}
+  .analyze-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;}
+  .analyze-canvas{width:100%;height:320px;background:var(--lcd-bg);border:1px solid #3a2a12;
+    border-radius:8px;display:block;}
+  .analyze-readout{font-size:11px;color:var(--ink);letter-spacing:.04em;line-height:1.7;}
+  .analyze-readout table{border-collapse:collapse;width:100%;}
+  .analyze-readout td,
+  .analyze-readout th{padding:2px 8px 2px 0;border-bottom:1px solid var(--line);}
+  .analyze-readout .tempo-big{font-size:22px;font-weight:800;color:var(--lcd);}
+  .analyze-err{color:#e8552e;font-size:11px;padding:4px 0;}
+
   footer{display:flex;align-items:center;gap:18px;flex-wrap:wrap;
     padding:13px 18px;border-top:1px solid var(--line);background:rgba(0,0,0,.16);}
   .legend{display:flex;align-items:center;gap:13px;flex-wrap:wrap;font-size:10px;
@@ -242,6 +258,7 @@
         <button id="exportSettings" class="btn" title="Export settings to a .json file">Export File</button>
         <button id="importSettings" class="btn" title="Import settings from a .json file">Import File</button>
         <input id="importFile" type="file" accept=".json,application/json" style="display:none">
+        <button id="analyzeAudio" class="btn" title="Analyze an audio file to extract tempo, structure & layers">Analyze Audio</button>
       </div>
     </header>
 
@@ -297,6 +314,22 @@
       </div>
       <canvas id="chopCanvas" class="chop-canvas"></canvas>
       <div class="chop-hint">Click = add marker · drag = move · double-click = delete</div>
+    </div>
+
+    <!-- audio analysis panel -->
+    <div id="analyzePanel" class="analyze-panel">
+      <div class="analyze-head">
+        <span class="analyze-title">Audio Analysis</span>
+        <div class="analyze-tools">
+          <input id="analyzeFile" type="file" accept="audio/*" style="display:none">
+          <span id="analyzeFilename" style="font-size:10px;color:var(--trim-dim);letter-spacing:.06em;"></span>
+          <span id="analyzeProgress" style="font-size:10px;color:var(--muted);letter-spacing:.06em;"></span>
+          <button id="analyzeExport" class="btn" style="display:none">Export Report JSON</button>
+          <button id="analyzeClose" class="btn icon-btn" title="Close">×</button>
+        </div>
+      </div>
+      <canvas id="analyzeCanvas" class="analyze-canvas"></canvas>
+      <div id="analyzeReadout" class="analyze-readout"></div>
     </div>
 
     <!-- song / pattern bar -->
@@ -1881,7 +1914,428 @@ chopCanvas.addEventListener('dblclick',(e)=>{
   }
 });
 
+// === AUDIO ANALYSIS ENGINE ===
+
+function fft(re, im){
+  const n=re.length;
+  let j=0;
+  for(let i=1;i<n;i++){
+    let bit=n>>1; for(;j&bit;bit>>=1)j^=bit; j^=bit;
+    if(i<j){ let t=re[i];re[i]=re[j];re[j]=t; t=im[i];im[i]=im[j];im[j]=t; }
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang=-2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let cr=1,ci=0;
+      for(let k=0;k<len/2;k++){
+        const ur=re[i+k],ui=im[i+k];
+        const vr=re[i+k+len/2]*cr-im[i+k+len/2]*ci;
+        const vi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const ncr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=ncr;
+      }
+    }
+  }
+}
+
+function computeSTFT(data, sr, frameSize=1024, hop=512){
+  const nBins=frameSize/2+1, nFrames=Math.ceil(data.length/hop);
+  const hann=new Float32Array(frameSize);
+  for(let i=0;i<frameSize;i++) hann[i]=0.5*(1-Math.cos(2*Math.PI*i/(frameSize-1)));
+  const re=new Float32Array(frameSize), im=new Float32Array(frameSize);
+  const frames=[];
+  for(let f=0;f<nFrames;f++){
+    re.fill(0); im.fill(0);
+    const start=f*hop;
+    for(let i=0;i<frameSize;i++) re[i]=(data[start+i]||0)*hann[i];
+    fft(re,im);
+    const mag=new Float32Array(nBins);
+    for(let b=0;b<nBins;b++) mag[b]=Math.sqrt(re[b]*re[b]+im[b]*im[b]);
+    frames.push(mag);
+  }
+  return {frames, frameRate:sr/hop, freqPerBin:sr/frameSize, nBins};
+}
+
+const BANDS=[
+  {name:'sub',loHz:30,hiHz:90},
+  {name:'low',loHz:90,hiHz:200},
+  {name:'lowmid',loHz:200,hiHz:600},
+  {name:'mid',loHz:600,hiHz:2000},
+  {name:'highmid',loHz:2000,hiHz:6000},
+  {name:'high',loHz:6000,hiHz:11000}
+];
+
+function bandEnvelopes(frames, freqPerBin){
+  const n=frames.length;
+  return BANDS.map(({name,loHz,hiHz})=>{
+    const lo=Math.round(loHz/freqPerBin), hi=Math.round(hiHz/freqPerBin);
+    const env=new Float32Array(n);
+    for(let f=0;f<n;f++){ let s=0; for(let b=lo;b<hi&&b<frames[f].length;b++) s+=frames[f][b]; env[f]=s; }
+    const sm=3, out=new Float32Array(n);
+    for(let f=0;f<n;f++){ let s=0,c=0; for(let k=f-sm;k<=f+sm;k++){if(k>=0&&k<n){s+=env[k];c++;}} out[f]=s/c; }
+    let mx=0; for(let f=0;f<n;f++) if(out[f]>mx) mx=out[f];
+    if(mx>0) for(let f=0;f<n;f++) out[f]/=mx;
+    return {name,loHz,hiHz,env:out};
+  });
+}
+
+function detectEntrances(bandEnvs, frameRate, thresh=0.18, sustainSec=0.3){
+  const sf=Math.round(sustainSec*frameRate);
+  return bandEnvs.map(({env})=>{
+    const n=env.length;
+    for(let i=0;i<n-sf;i++){
+      let ok=true; for(let k=0;k<sf;k++) if(env[i+k]<thresh){ok=false;break;}
+      if(ok) return i/frameRate;
+    }
+    return null;
+  });
+}
+
+function spectralFlux(frames){
+  const n=frames.length, flux=new Float32Array(n); let mx=0;
+  for(let f=1;f<n;f++){
+    let s=0; for(let b=0;b<frames[f].length;b++){ const d=frames[f][b]-frames[f-1][b]; if(d>0) s+=d; }
+    flux[f]=s; if(s>mx) mx=s;
+  }
+  if(mx>0) for(let f=0;f<n;f++) flux[f]/=mx;
+  return flux;
+}
+
+function pickOnsets(flux, frameRate, minGapSec=0.09){
+  const n=flux.length, wf=Math.round(0.5*frameRate), minGap=Math.round(minGapSec*frameRate);
+  const onsets=[]; let last=-minGap;
+  for(let i=1;i<n-1;i++){
+    let sum=0,sum2=0,cnt=0;
+    for(let k=i-wf;k<=i+wf;k++) if(k>=0&&k<n){sum+=flux[k];sum2+=flux[k]*flux[k];cnt++;}
+    const mean=sum/cnt, std=Math.sqrt(Math.max(0,sum2/cnt-mean*mean));
+    if(flux[i]>mean+std && flux[i]>flux[i-1] && flux[i]>=flux[i+1] && (i-last)>=minGap){
+      onsets.push(i/frameRate); last=i;
+    }
+  }
+  return onsets;
+}
+
+function estimateTempo(flux, frameRate){
+  const lagMin=Math.round(60*frameRate/240), lagMax=Math.round(60*frameRate/40), n=flux.length;
+  const acf=new Float32Array(lagMax+1);
+  for(let lag=lagMin;lag<=lagMax&&lag<n;lag++){
+    let s=0; for(let i=0;i+lag<n;i++) s+=flux[i]*flux[i+lag]; acf[lag]=s;
+  }
+  const peaks=[]; for(let l=lagMin+1;l<lagMax;l++) if(acf[l]>acf[l-1]&&acf[l]>=acf[l+1]) peaks.push(l);
+  peaks.sort((a,b)=>acf[b]-acf[a]);
+  const top=peaks.slice(0,5);
+  if(!top.length) return {primary:120,halfTime:60,doubleTime:240,candidates:[]};
+  const prior=bpm=>{ const d=bpm-120; return Math.exp(-(d*d)/5000); };
+  const cands=new Map();
+  for(const lag of top){
+    for(const m of [0.5,1,2,3]){
+      const bpm=Math.round(60*frameRate/(lag/m));
+      if(bpm<35||bpm>300) continue;
+      const score=acf[lag]*prior(bpm);
+      if(!cands.has(bpm)||cands.get(bpm)<score) cands.set(bpm,score);
+    }
+  }
+  const sorted=[...cands.entries()].sort((a,b)=>b[1]-a[1]);
+  const maxS=sorted[0]?sorted[0][1]:1;
+  const candidates=sorted.map(([bpm,s])=>({bpm,strength:s/maxS}));
+  const primary=(candidates.find(c=>c.bpm>=70&&c.bpm<=180)||candidates[0]||{bpm:120}).bpm;
+  return {primary,halfTime:Math.round(primary/2),doubleTime:primary*2,candidates};
+}
+
+function coarseFeatures(frames, freqPerBin, frameRate, targetHz=3){
+  const gs=Math.max(1,Math.round(frameRate/targetHz)), nC=Math.ceil(frames.length/gs);
+  const nB=12, loHz=30, hiHz=11000;
+  const edges=[];
+  for(let i=0;i<=nB;i++) edges.push(loHz*Math.pow(hiHz/loHz,i/nB));
+  const binEdges=edges.map(h=>Math.min(frames[0].length-1,Math.round(h/freqPerBin)));
+  const features=[];
+  for(let g=0;g<nC;g++){
+    const s=g*gs, e=Math.min(frames.length,(g+1)*gs);
+    const feat=new Float32Array(nB);
+    for(let f=s;f<e;f++) for(let b=0;b<nB;b++){ let v=0; for(let k=binEdges[b];k<binEdges[b+1];k++) v+=frames[f][k]; feat[b]+=v; }
+    for(let b=0;b<nB;b++) feat[b]=Math.log1p(feat[b]/(e-s));
+    let norm=0; for(let b=0;b<nB;b++) norm+=feat[b]*feat[b]; norm=Math.sqrt(norm)||1;
+    for(let b=0;b<nB;b++) feat[b]/=norm;
+    features.push(feat);
+  }
+  return {features, featRate:frameRate/gs};
+}
+
+function noveltyCurve(features, kernelSize=16){
+  const K=kernelSize, n=features.length, novelty=new Float32Array(n);
+  const gw=new Float32Array(K);
+  for(let i=0;i<K;i++) gw[i]=Math.exp(-0.5*(i/(K*0.5))*(i/(K*0.5)));
+  function cosSim(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; }
+  for(let ci=K;ci<n-K;ci++){
+    let nov=0;
+    for(let da=-K;da<K;da++){
+      for(let db=-K;db<K;db++){
+        const ia=ci+da, ib=ci+db;
+        if(ia<0||ia>=n||ib<0||ib>=n) continue;
+        const w=gw[Math.abs(da)]*gw[Math.abs(db)];
+        const sign=((da<0)===(db<0))?1:-1;
+        nov+=sign*w*cosSim(features[ia],features[ib]);
+      }
+    }
+    novelty[ci]=nov;
+  }
+  let mn=Infinity,mx=-Infinity;
+  for(let i=K;i<n-K;i++){ if(novelty[i]<mn)mn=novelty[i]; if(novelty[i]>mx)mx=novelty[i]; }
+  const range=(mx-mn)||1;
+  for(let i=0;i<n;i++) novelty[i]=Math.max(0,(novelty[i]-mn)/range);
+  return novelty;
+}
+
+function pickBoundaries(novelty, featRate, duration, minGapSec=3){
+  const n=novelty.length, minGap=Math.round(minGapSec*featRate);
+  let sum=0,sum2=0;
+  for(let i=0;i<n;i++){sum+=novelty[i];sum2+=novelty[i]*novelty[i];}
+  const mean=sum/n, std=Math.sqrt(Math.max(0,sum2/n-mean*mean));
+  const thr=mean+0.5*std, bounds=[0]; let last=0;
+  for(let i=1;i<n-1;i++){
+    if(novelty[i]>thr&&novelty[i]>novelty[i-1]&&novelty[i]>=novelty[i+1]&&(i-last)>=minGap){
+      bounds.push(i/featRate); last=i;
+    }
+  }
+  bounds.push(duration);
+  return bounds;
+}
+
+function buildSections(bounds, bandEnvs, frameRate, features, featRate){
+  const LABELS='ABCDEFGHIJKLMNOPQRSTUVWXYZ', protos=[], sections=[]; let li=0;
+  for(let i=0;i<bounds.length-1;i++){
+    const ss=bounds[i], se=bounds[i+1];
+    const sf=Math.round(ss*frameRate), ef=Math.round(se*frameRate);
+    const sfc=Math.round(ss*featRate), efc=Math.round(se*featRate);
+    const activeBands=bandEnvs.filter(({env})=>{
+      let s=0,c=0; for(let f=sf;f<ef&&f<env.length;f++){s+=env[f];c++;} return c>0&&s/c>=0.2;
+    }).map(b=>b.name);
+    let te=0,tc=0;
+    bandEnvs.forEach(({env})=>{ for(let f=sf;f<ef&&f<env.length;f++){te+=env[f];tc++;} });
+    const meanEnergy=tc>0?te/tc:0;
+    const mf=new Float32Array(features[0]?features[0].length:12); let fc=0;
+    for(let f=sfc;f<efc&&f<features.length;f++){for(let b=0;b<mf.length;b++) mf[b]+=features[f][b];fc++;}
+    if(fc>0) for(let b=0;b<mf.length;b++) mf[b]/=fc;
+    let label=null;
+    for(const p of protos){ let d=0; for(let b=0;b<mf.length;b++) d+=mf[b]*p.feat[b]; if(d>=0.9){label=p.label;break;} }
+    if(!label){ label=LABELS[li%26]; li++; protos.push({label,feat:mf}); }
+    sections.push({startSec:ss,endSec:se,label,typeGuess:'section',activeBands,meanEnergy});
+  }
+  const maxE=Math.max(...sections.map(s=>s.meanEnergy),0);
+  sections.forEach((s,i)=>{
+    const prev=sections[i-1];
+    if(i===0&&s.meanEnergy<0.3&&s.activeBands.length<=2) s.typeGuess='intro';
+    else if(prev&&s.activeBands.length>prev.activeBands.length) s.typeGuess='build';
+    else if(s.meanEnergy>=maxE*0.95&&s.activeBands.length>=bandEnvs.length-1) s.typeGuess='main';
+    else if(prev&&prev.typeGuess==='main'&&s.meanEnergy<prev.meanEnergy*0.6) s.typeGuess='break';
+  });
+  return sections;
+}
+
+async function decodeToMono22k(file){
+  const buf=await file.arrayBuffer();
+  const tmpCtx=new (window.AudioContext||window.webkitAudioContext)();
+  let decoded;
+  try{ decoded=await tmpCtx.decodeAudioData(buf); }
+  finally{ tmpCtx.close(); }
+  const duration=decoded.duration;
+  const outLen=Math.ceil(duration*22050);
+  const offCtx=new OfflineAudioContext(1,outLen,22050);
+  const src=offCtx.createBufferSource(); src.buffer=decoded;
+  src.connect(offCtx.destination); src.start(0);
+  const rendered=await offCtx.startRendering();
+  return {data:rendered.getChannelData(0), sampleRate:22050, duration};
+}
+
+function downsampleEnv(env, n=800){
+  const out=[], step=env.length/n;
+  for(let i=0;i<n;i++){
+    const s=Math.floor(i*step), e=Math.min(env.length,Math.floor((i+1)*step));
+    let sum=0; for(let k=s;k<e;k++) sum+=env[k];
+    out.push(e>s?sum/(e-s):0);
+  }
+  return out;
+}
+
+let lastAnalysis=null;
+
+async function analyzeAudio(file, onProgress){
+  onProgress('Decoding…');
+  const {data,sampleRate,duration}=await decodeToMono22k(file);
+  if(duration>720&&!confirm('This file is '+Math.round(duration/60)+' min long. Analyze anyway?')) return null;
+
+  await new Promise(r=>setTimeout(r,0));
+  onProgress('Transform…');
+  const {frames,frameRate,freqPerBin}=computeSTFT(data,sampleRate);
+
+  await new Promise(r=>setTimeout(r,0));
+  onProgress('Bands & onsets…');
+  const bandEnvs=bandEnvelopes(frames,freqPerBin);
+  const entrances=detectEntrances(bandEnvs,frameRate);
+  const flux=spectralFlux(frames);
+  const onsetTimes=pickOnsets(flux,frameRate);
+
+  await new Promise(r=>setTimeout(r,0));
+  onProgress('Tempo…');
+  const tempo=estimateTempo(flux,frameRate);
+
+  await new Promise(r=>setTimeout(r,0));
+  onProgress('Structure…');
+  const {features,featRate}=coarseFeatures(frames,freqPerBin,frameRate);
+  const novelty=noveltyCurve(features);
+  const bounds=pickBoundaries(novelty,featRate,duration);
+  const sections=buildSections(bounds,bandEnvs,frameRate,features,featRate);
+
+  onProgress('Done.');
+  const report={
+    meta:{filename:file.name,durationSec:duration,sampleRate:22050,analyzedAt:new Date().toISOString()},
+    tempo,
+    bands:bandEnvs.map((b,i)=>({
+      name:b.name,loHz:b.loHz,hiHz:b.hiHz,
+      envelope:downsampleEnv(b.env),
+      entranceSec:entrances[i],
+      peak:Math.max(...b.env)
+    })),
+    onsets:{envelope:downsampleEnv(flux),times:onsetTimes,frameRate},
+    sections
+  };
+  lastAnalysis=report;
+  return report;
+}
+
+const BAND_COLORS=['#7055d4','#4a90d9','#45b89c','#f0c040','#e8803a','#e85050'];
+
+function drawAnalysis(report, canvas){
+  const w=canvas.width=canvas.clientWidth||800, h=canvas.height=320;
+  const ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,w,h);
+  const dur=report.meta.durationSec;
+  const envH=220, envY=48;
+
+  report.bands.forEach((band,bi)=>{
+    const env=band.envelope, n=env.length;
+    ctx.beginPath(); ctx.moveTo(0,envY+envH);
+    for(let i=0;i<n;i++){ const x=i/n*w, y=envY+envH*(1-env[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }
+    ctx.lineTo(w,envY+envH); ctx.closePath();
+    ctx.fillStyle=BAND_COLORS[bi]+'2a'; ctx.fill();
+    ctx.strokeStyle=BAND_COLORS[bi]+'bb'; ctx.lineWidth=1.5; ctx.stroke();
+  });
+
+  const oEnv=report.onsets.envelope, oH=30, oY=envY+envH+6;
+  ctx.beginPath();
+  for(let i=0;i<oEnv.length;i++){ const x=i/oEnv.length*w, y=oY+oH*(1-oEnv[i]); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }
+  ctx.strokeStyle='rgba(255,255,255,.25)'; ctx.lineWidth=1; ctx.stroke();
+
+  const beatSec=60/report.tempo.primary;
+  ctx.strokeStyle='rgba(255,255,255,.05)'; ctx.lineWidth=1;
+  for(let t=0;t<dur;t+=beatSec){ const x=t/dur*w; ctx.beginPath(); ctx.moveTo(x,envY); ctx.lineTo(x,envY+envH); ctx.stroke(); }
+
+  ctx.setLineDash([]);
+  report.sections.forEach((sec,i)=>{
+    if(i===0) return;
+    const x=sec.startSec/dur*w;
+    ctx.strokeStyle='rgba(255,255,255,.2)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x,envY); ctx.lineTo(x,envY+envH); ctx.stroke();
+    ctx.fillStyle='rgba(255,255,255,.5)'; ctx.font='9px monospace';
+    ctx.fillText(sec.label+'·'+sec.typeGuess, x+2, envY+10);
+  });
+
+  report.bands.forEach((band,bi)=>{
+    if(band.entranceSec==null) return;
+    const x=band.entranceSec/dur*w;
+    ctx.strokeStyle=BAND_COLORS[bi]; ctx.lineWidth=1.5;
+    ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(x,envY); ctx.lineTo(x,envY+envH); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=BAND_COLORS[bi]; ctx.font='9px monospace';
+    ctx.fillText(band.name, x+2, envY+14+bi*11);
+  });
+
+  report.bands.forEach((band,bi)=>{
+    ctx.fillStyle=BAND_COLORS[bi]; ctx.font='9px monospace';
+    ctx.fillText(band.name, 2, envY+envH-(bi*14)-4);
+  });
+
+  const step=Math.ceil(dur/8);
+  ctx.fillStyle='rgba(255,255,255,.3)'; ctx.font='9px monospace';
+  for(let t=0;t<=dur;t+=step){
+    const x=Math.min(w-24,t/dur*w);
+    ctx.fillText(String(Math.floor(t/60))+':'+String(t%60).padStart(2,'0'), x, envY-4);
+  }
+}
+
+function renderReadout(report, el){
+  const t=report.tempo;
+  const fmt=s=>String(Math.floor(s/60))+':'+String(Math.floor(s%60)).padStart(2,'0');
+  let h=`<div style="margin-bottom:10px">
+    <span class="tempo-big">${t.primary} BPM</span>
+    <span style="color:var(--muted);font-size:10px;margin-left:10px;">½ = ${t.halfTime} · 2× = ${t.doubleTime}</span>
+    <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">
+      ${(t.candidates||[]).slice(0,6).map(c=>`<span style="background:var(--recess);border:1px solid var(--line);border-radius:4px;padding:2px 6px;font-size:10px;">${c.bpm}<span style="color:var(--muted);"> ${Math.round(c.strength*100)}%</span></span>`).join('')}
+    </div></div>
+  <table style="margin-bottom:10px">
+    <tr><th style="text-align:left;color:var(--muted);font-weight:normal;">Band</th><th style="text-align:left;color:var(--muted);font-weight:normal;">Enters</th><th style="text-align:left;color:var(--muted);font-weight:normal;">Active</th></tr>
+    ${report.bands.map(b=>`<tr><td>${b.name}</td><td>${b.entranceSec!=null?fmt(b.entranceSec):'—'}</td><td>${b.entranceSec!=null?'✓':'✗'}</td></tr>`).join('')}
+  </table>
+  <div style="color:var(--muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px;">Sections</div>
+  <table>
+    ${report.sections.map(s=>`<tr>
+      <td style="font-weight:800;color:var(--trim);padding-right:10px">${s.label}</td>
+      <td>${fmt(s.startSec)}–${fmt(s.endSec)}</td>
+      <td style="color:var(--muted);padding:0 10px">${s.typeGuess}</td>
+      <td style="color:var(--muted);font-size:10px">${s.activeBands.join(', ')}</td>
+    </tr>`).join('')}
+  </table>`;
+  if(report.onsets.times.length===0) h+=`<div class="analyze-err" style="margin-top:8px">No clear rhythmic content detected.</div>`;
+  el.innerHTML=h;
+}
+
+// --- audio analysis panel ---
+const analyzePanel=document.getElementById('analyzePanel');
+const analyzeCanvas=document.getElementById('analyzeCanvas');
+const analyzeReadout=document.getElementById('analyzeReadout');
+const analyzeProgress=document.getElementById('analyzeProgress');
+const analyzeFilename=document.getElementById('analyzeFilename');
+const analyzeExportBtn=document.getElementById('analyzeExport');
+
+document.getElementById('analyzeAudio').onclick=()=>{
+  const wasOpen=analyzePanel.classList.contains('show');
+  analyzePanel.classList.toggle('show');
+  if(!wasOpen) document.getElementById('analyzeFile').click();
+};
+document.getElementById('analyzeClose').onclick=()=>analyzePanel.classList.remove('show');
+
+document.getElementById('analyzeFile').onchange=async(e)=>{
+  const file=e.target.files[0]; if(!file) return;
+  analyzeFilename.textContent=file.name;
+  analyzeReadout.innerHTML='';
+  analyzeExportBtn.style.display='none';
+  try{
+    const report=await analyzeAudio(file,msg=>{analyzeProgress.textContent=msg;});
+    if(!report) return;
+    drawAnalysis(report,analyzeCanvas);
+    renderReadout(report,analyzeReadout);
+    analyzeExportBtn.style.display='';
+  }catch(err){
+    analyzeReadout.innerHTML=`<div class="analyze-err">Could not decode this file: ${err.message}</div>`;
+    analyzeProgress.textContent='';
+  }
+  e.target.value='';
+};
+
+analyzeExportBtn.onclick=()=>{
+  if(!lastAnalysis) return;
+  const fname=(lastAnalysis.meta.filename||'analysis').replace(/\.[^.]+$/,'')+'.analysis.json';
+  downloadBlob(new Blob([JSON.stringify(lastAnalysis,null,2)],{type:'application/json'}),fname);
+};
+
+window.addEventListener('resize',()=>{
+  if(analyzePanel.classList.contains('show')&&lastAnalysis) drawAnalysis(lastAnalysis,analyzeCanvas);
+});
+
 // --- init ---
+rebuildGrid();
 rebuildGrid();
 buildPatBtns();
 buildSongSlots();
