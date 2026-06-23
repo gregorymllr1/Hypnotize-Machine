@@ -324,6 +324,9 @@
           <input id="analyzeFile" type="file" accept="audio/*" style="display:none">
           <span id="analyzeFilename" style="font-size:10px;color:var(--trim-dim);letter-spacing:.06em;"></span>
           <span id="analyzeProgress" style="font-size:10px;color:var(--muted);letter-spacing:.06em;"></span>
+          <input id="analyzeImport" type="file" accept=".json,application/json" style="display:none">
+          <button id="analyzeImportBtn" class="btn">Import Report</button>
+          <button id="analyzePopulate" class="btn" style="display:none" title="Build sequencer patterns from this analysis">Populate Grid</button>
           <button id="analyzeExport" class="btn" style="display:none">Export Report JSON</button>
           <button id="analyzeClose" class="btn icon-btn" title="Close">×</button>
         </div>
@@ -1736,8 +1739,16 @@ document.getElementById('importFile').onchange=(e)=>{
   const f=e.target.files[0]; if(!f){ return; }
   f.text().then(txt=>{
     let obj;
-    try{ obj=JSON.parse(txt); }catch(_){ alert('Not a valid Hypnotize settings file'); return; }
-    if(!obj || typeof obj!=='object' || (!obj.patterns && !obj.lanes)){ alert('Not a valid Hypnotize settings file'); return; }
+    try{ obj=JSON.parse(txt); }catch(_){ alert('Could not read this file — invalid JSON.'); return; }
+    if(isAnalysisReport(obj)){
+      analyzePanel.classList.add('show');
+      showAnalysisReport(normalizeAnalysisReport(obj));
+      return;
+    }
+    if(!obj || typeof obj!=='object' || (!obj.patterns && !obj.lanes)){
+      alert('Not a Hypnotize settings file. For analysis reports (.analysis.json), use Analyze Audio → Import Report.');
+      return;
+    }
     applySettings(obj);
     const name=((obj.meta&&obj.meta.title) || f.name.replace(/\.hypnotize\.json$/i,'').replace(/\.json$/i,'') || 'imported').trim() || 'imported';
     try{
@@ -2064,8 +2075,8 @@ function coarseFeatures(frames, freqPerBin, frameRate, targetHz=3){
 
 function noveltyCurve(features, kernelSize=16){
   const K=kernelSize, n=features.length, novelty=new Float32Array(n);
-  const gw=new Float32Array(K);
-  for(let i=0;i<K;i++) gw[i]=Math.exp(-0.5*(i/(K*0.5))*(i/(K*0.5)));
+  const gw=new Float32Array(K+1);
+  for(let i=0;i<=K;i++) gw[i]=Math.exp(-0.5*(i/(K*0.5))*(i/(K*0.5)));
   function cosSim(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; }
   for(let ci=K;ci<n-K;ci++){
     let nov=0;
@@ -2159,6 +2170,211 @@ function downsampleEnv(env, n=800){
 }
 
 let lastAnalysis=null;
+
+// --- analysis → sequencer (piece 3) ---
+const ANALYSIS_DRUM_TYPES=new Set(['kick','snare','clap','chh','ohh','bass808']);
+
+function unwrapAnalysisReport(obj){
+  if(!obj || typeof obj!=='object') return null;
+  if(obj.report && typeof obj.report==='object') return obj.report;
+  if(obj.analysis && typeof obj.analysis==='object') return obj.analysis;
+  return obj;
+}
+
+function isAnalysisReport(obj){
+  const r=unwrapAnalysisReport(obj);
+  return !!(r && r.meta && r.tempo && Array.isArray(r.bands) && r.onsets && Array.isArray(r.sections));
+}
+
+function normalizeAnalysisReport(obj){
+  const r={...unwrapAnalysisReport(obj)};
+  if(!Array.isArray(r.onsets.times)) r.onsets={...r.onsets, times:[]};
+  if(!r.meta.durationSec && r.meta.duration) r.meta.durationSec=r.meta.duration;
+  if(!Array.isArray(r.sections)||!r.sections.length){
+    r.sections=[{startSec:0, endSec:r.meta.durationSec||0, label:'A',
+      activeBands:(r.bands||[]).map(b=>b.name)}];
+  }
+  for(const b of r.bands){
+    if(!Array.isArray(b.envelope)) b.envelope=[];
+  }
+  return r;
+}
+
+function envAtBand(band, t, duration){
+  const env=band.envelope;
+  if(!env||!env.length) return 0;
+  const idx=Math.min(env.length-1, Math.floor((t/duration)*env.length));
+  return env[idx];
+}
+
+function bandEnergyAt(t, bands, duration, names){
+  let max=0;
+  for(const b of bands){
+    if(names && !names.includes(b.name)) continue;
+    max=Math.max(max, envAtBand(b,t,duration));
+  }
+  return max;
+}
+
+function classifyOnsetLane(t, bands, duration){
+  const scores=[
+    {type:'kick',   score:bandEnergyAt(t,bands,duration,['sub','low'])},
+    {type:'snare',  score:bandEnergyAt(t,bands,duration,['lowmid'])},
+    {type:'chh',    score:bandEnergyAt(t,bands,duration,['high'])},
+    {type:'clap',   score:bandEnergyAt(t,bands,duration,['highmid'])*0.9},
+    {type:'ohh',    score:bandEnergyAt(t,bands,duration,['high'])*0.55},
+  ];
+  scores.sort((a,b)=>b.score-a.score);
+  return scores[0].score>0.02 ? scores[0].type : 'snare';
+}
+
+function barDurationSec(bpm, steps=16){ return (60/bpm)*(steps/4); }
+
+function pickBarStart(report, section, mode='afterBuild'){
+  const bpm=report.tempo.primary;
+  const bd=barDurationSec(bpm);
+  const secStart=section.startSec, secEnd=section.endSec;
+  let start;
+  if(mode==='start'){
+    start=Math.round(secStart/bd)*bd;
+  } else {
+    const entrances=report.bands
+      .map(b=>b.entranceSec)
+      .filter(t=>t!=null && t>=secStart && t<secEnd);
+    const anchor=entrances.length ? Math.max(...entrances) : secStart;
+    start=Math.ceil(anchor/bd)*bd;
+  }
+  if(start+bd>secEnd) start=Math.max(secStart, secEnd-bd);
+  return Math.max(secStart, start);
+}
+
+function bumpRoll(st){
+  const i=ROLL_CYCLE.indexOf(st.roll);
+  st.roll=ROLL_CYCLE[Math.min(i<0?1:i+1, ROLL_CYCLE.length-1)];
+}
+
+function laneStepTemplates(steps=16){
+  const t={};
+  for(const type of ANALYSIS_DRUM_TYPES) t[type]=stepsFrom(new Array(steps).fill(0));
+  return t;
+}
+
+function fillBarFromAnalysis(report, section, barStart, steps=16){
+  const bpm=report.tempo.primary;
+  const dur=report.meta.durationSec;
+  const barEnd=barStart+barDurationSec(bpm,steps);
+  const stepDur=(60/bpm)/4;
+  const laneSteps=laneStepTemplates(steps);
+  const active=new Set(section.activeBands||report.bands.map(b=>b.name));
+
+  for(const t of report.onsets.times){
+    if(t<barStart||t>=barEnd) continue;
+    const step=Math.min(steps-1, Math.round((t-barStart)/stepDur));
+    const lane=classifyOnsetLane(t, report.bands, dur);
+    const st=laneSteps[lane][step];
+    const vel=Math.max(0.35, Math.min(1, bandEnergyAt(t, report.bands, dur, null)));
+    if(st.roll===0) st.roll=1;
+    else if(lane==='chh'||lane==='ohh') bumpRoll(st);
+    st.vel=Math.max(st.vel, vel);
+  }
+
+  const highBand=report.bands.find(b=>b.name==='high');
+  if(highBand && active.has('high')){
+    const energies=[];
+    for(let s=0;s<steps;s++) energies.push(envAtBand(highBand, barStart+s*stepDur, dur));
+    const mean=energies.reduce((a,v)=>a+v,0)/steps;
+    const std=Math.sqrt(energies.reduce((a,v)=>a+(v-mean)**2,0)/steps);
+    const thr=mean+0.22*std;
+    for(let s=0;s<steps;s++){
+      if(energies[s]<thr) continue;
+      const st=laneSteps.chh[s];
+      if(st.roll===0){ st.roll=1; st.vel=Math.max(0.4, energies[s]); }
+      else if(energies[s]>mean+0.45*std) bumpRoll(st);
+    }
+  }
+
+  const subBand=report.bands.find(b=>b.name==='sub');
+  if(subBand && active.has('sub')){
+    for(const beat of [0,8]){
+      const t=barStart+beat*stepDur;
+      const e=envAtBand(subBand,t,dur);
+      if(e<0.12) continue;
+      const st=laneSteps.bass808[beat];
+      st.roll=1; st.note=36; st.glide=1; st.vel=Math.max(0.45, Math.min(1,e));
+    }
+  }
+
+  if(!active.has('lowmid') && !active.has('highmid')) laneSteps.snare.forEach(s=>{s.roll=0;});
+  if(!active.has('sub') && !active.has('low')){ laneSteps.kick.forEach(s=>{s.roll=0;}); laneSteps.bass808.forEach(s=>{s.roll=0;}); }
+  if(!active.has('high') && !active.has('highmid')){ laneSteps.chh.forEach(s=>{s.roll=0;}); laneSteps.ohh.forEach(s=>{s.roll=0;}); }
+
+  return laneSteps;
+}
+
+function applyLaneStepsToPattern(lanes, laneSteps){
+  for(const L of lanes){
+    if(laneSteps[L.type]) L.steps=laneSteps[L.type].map(s=>({...s}));
+    if(L.type==='sample'||L.type==='chop') L.mute=true;
+    L.length=16;
+  }
+}
+
+function populateGridFromAnalysis(report, opts={}){
+  if(!isAnalysisReport(report)) throw new Error('Not a valid analysis report');
+  report=normalizeAnalysisReport(report);
+  const newBpm=Math.max(60, Math.min(200, Math.round(report.tempo.primary||140)));
+  const barMode=opts.barMode||'afterBuild';
+  const sections=report.sections.length
+    ? report.sections
+    : [{startSec:0, endSec:report.meta.durationSec, label:'A', activeBands:report.bands.map(b=>b.name)}];
+
+  const newPatterns=sections.slice(0,8).map((sec,i)=>{
+    const lanes=defaultLanes();
+    const barStart=pickBarStart(report, sec, barMode);
+    const laneSteps=fillBarFromAnalysis(report, sec, barStart);
+    applyLaneStepsToPattern(lanes, laneSteps);
+    return {name:sec.label||String.fromCharCode(65+i), lanes, _barStart:barStart};
+  });
+
+  patterns=newPatterns;
+  curPat=0;
+  lanes=patterns[0].lanes;
+  if(patterns.length>1){
+    songMode=true;
+    songSeq=patterns.map((_,i)=>i);
+    songPos=0;
+  }
+
+  bpm=newBpm;
+  bpmEl.value=newBpm;
+  document.getElementById('bpmval').textContent=newBpm;
+  document.getElementById('bpmlbl').textContent=newBpm;
+
+  const songBtn=document.getElementById('songToggle');
+  songBtn.textContent=songMode?'On':'Off';
+  songBtn.classList.toggle('on',songMode);
+  document.getElementById('songSeqWrap').classList.toggle('show',songMode);
+
+  rebuildGrid();
+  buildPatBtns();
+  buildSongSlots();
+
+  const barInfo=patterns.map(p=>{
+    const m=Math.floor(p._barStart/60), s=Math.floor(p._barStart%60);
+    return p.name+' @ '+m+':'+String(s).padStart(2,'0');
+  }).join(', ');
+  return {bpm:newBpm, patterns:patterns.length, barInfo};
+}
+
+function showAnalysisReport(report){
+  lastAnalysis=report;
+  analyzeFilename.textContent=report.meta.filename||'imported report';
+  drawAnalysis(report, analyzeCanvas);
+  renderReadout(report, analyzeReadout);
+  analyzeExportBtn.style.display='';
+  analyzePopulateBtn.style.display='';
+  analyzeProgress.textContent='';
+}
 
 async function analyzeAudio(file, onProgress){
   onProgress('Decoding…');
@@ -2288,6 +2504,7 @@ function renderReadout(report, el){
     </tr>`).join('')}
   </table>`;
   if(report.onsets.times.length===0) h+=`<div class="analyze-err" style="margin-top:8px">No clear rhythmic content detected.</div>`;
+  h+=`<div style="margin-top:10px;color:var(--trim-dim);font-size:10px;letter-spacing:.06em">Click <b style="color:var(--trim)">Populate Grid</b> to map onsets and band energy into kick, snare, hats, bass, and clap lanes — one pattern per detected section.</div>`;
   el.innerHTML=h;
 }
 
@@ -2298,6 +2515,7 @@ const analyzeReadout=document.getElementById('analyzeReadout');
 const analyzeProgress=document.getElementById('analyzeProgress');
 const analyzeFilename=document.getElementById('analyzeFilename');
 const analyzeExportBtn=document.getElementById('analyzeExport');
+const analyzePopulateBtn=document.getElementById('analyzePopulate');
 
 document.getElementById('analyzeAudio').onclick=()=>{
   const wasOpen=analyzePanel.classList.contains('show');
@@ -2308,20 +2526,44 @@ document.getElementById('analyzeClose').onclick=()=>analyzePanel.classList.remov
 
 document.getElementById('analyzeFile').onchange=async(e)=>{
   const file=e.target.files[0]; if(!file) return;
-  analyzeFilename.textContent=file.name;
   analyzeReadout.innerHTML='';
   analyzeExportBtn.style.display='none';
+  analyzePopulateBtn.style.display='none';
   try{
     const report=await analyzeAudio(file,msg=>{analyzeProgress.textContent=msg;});
     if(!report) return;
-    drawAnalysis(report,analyzeCanvas);
-    renderReadout(report,analyzeReadout);
-    analyzeExportBtn.style.display='';
+    showAnalysisReport(report);
   }catch(err){
     analyzeReadout.innerHTML=`<div class="analyze-err">Could not decode this file: ${err.message}</div>`;
     analyzeProgress.textContent='';
   }
   e.target.value='';
+};
+
+document.getElementById('analyzeImportBtn').onclick=()=>document.getElementById('analyzeImport').click();
+document.getElementById('analyzeImport').onchange=(e)=>{
+  const file=e.target.files[0]; if(!file) return;
+  file.text().then(txt=>{
+    let obj;
+    try{ obj=JSON.parse(txt); }catch(err){ alert('Could not read this file — invalid JSON.'); return; }
+    if(!isAnalysisReport(obj)){
+      alert('Not an analysis report. Expected meta, tempo, bands, onsets, and sections fields.');
+      return;
+    }
+    analyzePanel.classList.add('show');
+    showAnalysisReport(normalizeAnalysisReport(obj));
+  }).catch(err=>{ alert('Could not read file: '+err.message); });
+  e.target.value='';
+};
+
+analyzePopulateBtn.onclick=()=>{
+  if(!lastAnalysis) return;
+  try{
+    const info=populateGridFromAnalysis(lastAnalysis);
+    analyzeProgress.textContent='Grid populated — '+info.bpm+' BPM, '+info.patterns+' pattern(s), bars: '+info.barInfo;
+  }catch(err){
+    alert('Could not populate grid: '+err.message);
+  }
 };
 
 analyzeExportBtn.onclick=()=>{
