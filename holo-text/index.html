@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Holo Text</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&display=block" rel="stylesheet">
+<style>
+  :root { --bg: #000; --fg: #fff; --panel: rgba(0,0,0,.82); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
+    font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #panel { position: fixed; left: 16px; right: 16px; bottom: 16px; margin: 0 auto; max-width: 720px;
+    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 12px;
+    background: var(--panel); border: 1px solid #fff; transition: opacity .3s; }
+  #panel.hidden { opacity: 0; pointer-events: none; }
+  #text { flex: 1 1 100%; font: inherit; font-size: 16px; padding: 8px 10px; background: #000; color: #fff;
+    border: 1px solid #fff; outline: none; }
+  label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+  input[type=range] { width: 110px; accent-color: #fff; }
+  select, button { font: inherit; background: #000; color: #fff; border: 1px solid #fff; padding: 4px 8px; cursor: pointer; }
+  button:hover, select:hover { background: #fff; color: #000; }
+  .hint { opacity: .6; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <input id="text" type="text" value="FLOAT" placeholder="Type something…" autocomplete="off" spellcheck="false">
+  <label>Stripe <input id="stripe" type="range" min="2" max="40" value="8"></label>
+  <label>Mode
+    <select id="mode">
+      <option value="cross">Crossed (±45°)</option>
+      <option value="invert">Same 45°, inverted</option>
+    </select>
+  </label>
+  <label><input id="drift" type="checkbox"> Drift</label>
+  <button id="save">Save PNG</button>
+  <span class="hint">H hides this panel</span>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const mask = document.createElement('canvas');
+  const mctx = mask.getContext('2d', { willReadFrequently: true });
+  const $ = id => document.getElementById(id);
+  const textEl = $('text'), stripeEl = $('stripe'), modeEl = $('mode'), driftEl = $('drift');
+
+  const FONT = '"Archivo Black", "Arial Black", Impact, sans-serif';
+  const MARGIN = 0.05;       // fraction of the short side kept clear around the words
+  const LINE_GAP = 0.12;     // gap between lines, as a fraction of the font size
+
+  let W = 0, H = 0, dpr = 1, maskData = null, img = null, phase = 0, dirty = true;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    W = Math.round(innerWidth * dpr);
+    H = Math.round(innerHeight * dpr);
+    canvas.width = mask.width = W;
+    canvas.height = mask.height = H;
+    img = ctx.createImageData(W, H);
+    buildMask();
+  }
+
+  // Split words into k lines so the widest line is as short as possible.
+  function balance(widths, space, k) {
+    const n = widths.length;
+    const lineW = (i, j) => { let s = 0; for (let t = i; t < j; t++) s += widths[t]; return s + space * (j - i - 1); };
+    // best[j][m]: minimal max-width using first j words in m lines
+    const best = Array.from({ length: n + 1 }, () => new Array(k + 1).fill(Infinity));
+    const cut = Array.from({ length: n + 1 }, () => new Array(k + 1).fill(0));
+    best[0][0] = 0;
+    for (let m = 1; m <= k; m++)
+      for (let j = m; j <= n; j++)
+        for (let i = m - 1; i < j; i++) {
+          const v = Math.max(best[i][m - 1], lineW(i, j));
+          if (v < best[j][m]) { best[j][m] = v; cut[j][m] = i; }
+        }
+    const lines = [];
+    for (let j = n, m = k; m > 0; m--) { const i = cut[j][m]; lines.unshift([i, j]); j = i; }
+    return lines;
+  }
+
+  // Render the text as a hard-edged white-on-black mask, as large as fits.
+  function buildMask() {
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.clearRect(0, 0, W, H);
+    const raw = textEl.value.trim().replace(/\s+/g, ' ');
+    if (!raw) { maskData = null; dirty = true; return; }
+
+    const words = raw.split(' ');
+    const REF = 100;
+    mctx.font = `${REF}px ${FONT}`;
+    const widths = words.map(w => mctx.measureText(w).width);
+    const space = mctx.measureText(' ').width;
+    const m = mctx.measureText('HgÅ');
+    const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
+
+    const pad = Math.min(W, H) * MARGIN;
+    const aw = W - pad * 2, ah = H - pad * 2;
+
+    // Try every line count; keep the layout that yields the biggest type.
+    let bestLayout = null;
+    for (let k = 1; k <= words.length; k++) {
+      const lines = balance(widths, space, k).map(([i, j]) => words.slice(i, j).join(' '));
+      const boxes = lines.map(l => mctx.measureText(l));
+      const maxW = Math.max(...boxes.map(b => b.actualBoundingBoxLeft + b.actualBoundingBoxRight));
+      const blockH = k * (asc + desc) + (k - 1) * LINE_GAP * REF;
+      const scale = Math.min(aw / maxW, ah / blockH);
+      if (!bestLayout || scale > bestLayout.scale) bestLayout = { lines, boxes, scale, blockH };
+    }
+
+    const { lines, boxes, scale, blockH } = bestLayout;
+    const size = REF * scale;
+    mctx.font = `${size}px ${FONT}`;
+    mctx.fillStyle = '#fff';
+    mctx.textBaseline = 'alphabetic';
+    let y = (H - blockH * scale) / 2 + asc * scale;
+    lines.forEach((line, idx) => {
+      const b = boxes[idx];
+      const w = (b.actualBoundingBoxLeft + b.actualBoundingBoxRight) * scale;
+      const x = (W - w) / 2 + b.actualBoundingBoxLeft * scale;
+      mctx.fillText(line, x, y);
+      y += (asc + desc + LINE_GAP * REF) * scale;
+    });
+
+    // Threshold alpha so the letter edges are stark, not antialiased grey.
+    const a = mctx.getImageData(0, 0, W, H).data;
+    maskData = new Uint8Array(W * H);
+    for (let p = 0, q = 3; p < maskData.length; p++, q += 4) maskData[p] = a[q] > 127 ? 1 : 0;
+    dirty = true;
+  }
+
+  // Pure per-pixel stripes: no antialiasing, every edge exactly black or white.
+  function paint() {
+    const s = Math.max(1, Math.round(+stripeEl.value * dpr)); // stripe thickness (px, measured along the axis)
+    const period = s * 2;
+    const invert = modeEl.value === 'invert';
+    const ph = Math.round(phase * dpr);
+    const d = img.data;
+    const mk = maskData;
+    let o = 0, p = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++, p++, o += 4) {
+        let v;
+        if (mk && mk[p]) {
+          v = invert
+            ? ((((x + y + ph) % period) + period) % period) >= s          // same angle, opposite phase
+            : ((((x - y - ph) % period) + period) % period) < s;          // perpendicular (−45°)
+        } else {
+          v = ((((x + y - ph) % period) + period) % period) < s;          // background at +45°
+        }
+        const c = v ? 255 : 0;
+        d[o] = d[o + 1] = d[o + 2] = c; d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    dirty = false;
+  }
+
+  function loop() {
+    if (driftEl.checked) { phase += 0.5; dirty = true; }
+    if (dirty) paint();
+    requestAnimationFrame(loop);
+  }
+
+  textEl.addEventListener('input', buildMask);
+  stripeEl.addEventListener('input', () => dirty = true);
+  modeEl.addEventListener('change', () => dirty = true);
+  addEventListener('resize', resize);
+  addEventListener('keydown', e => {
+    if (e.target === textEl) return;
+    if (e.key === 'h' || e.key === 'H') $('panel').classList.toggle('hidden');
+  });
+  $('save').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.download = (textEl.value.trim() || 'holo').replace(/[^\w-]+/g, '_') + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  });
+
+  const start = () => { resize(); loop(); };
+  (document.fonts ? document.fonts.load(`100px "Archivo Black"`).then(() => document.fonts.ready) : Promise.resolve())
+    .catch(() => {}).then(start);
+})();
+</script>
+</body>
+</html>
