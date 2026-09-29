@@ -38,6 +38,13 @@
       <option value="invert">Same 45°, inverted</option>
     </select>
   </label>
+  <label>Fit
+    <select id="fit">
+      <option value="stretch">Stretch to fill</option>
+      <option value="proportional">Proportional</option>
+    </select>
+  </label>
+  <label>Margin <input id="margin" type="range" min="0" max="15" value="3"></label>
   <label><input id="drift" type="checkbox"> Drift</label>
   <button id="save">Save PNG</button>
   <span class="hint">H hides this panel</span>
@@ -50,11 +57,12 @@
   const mask = document.createElement('canvas');
   const mctx = mask.getContext('2d', { willReadFrequently: true });
   const $ = id => document.getElementById(id);
-  const textEl = $('text'), stripeEl = $('stripe'), modeEl = $('mode'), driftEl = $('drift');
+  const textEl = $('text'), stripeEl = $('stripe'), modeEl = $('mode'), driftEl = $('drift'),
+        fitEl = $('fit'), marginEl = $('margin');
 
   const FONT = '"Archivo Black", "Arial Black", Impact, sans-serif';
-  const MARGIN = 0.05;       // fraction of the short side kept clear around the words
-  const LINE_GAP = 0.12;     // gap between lines, as a fraction of the font size
+  const LINE_GAP = 0.14;     // gap between lines, as a fraction of each line's height
+  const REF = 200;           // reference font size for measuring
 
   let W = 0, H = 0, dpr = 1, maskData = null, img = null, phase = 0, dirty = true;
 
@@ -95,40 +103,64 @@
     if (!raw) { maskData = null; dirty = true; return; }
 
     const words = raw.split(' ');
-    const REF = 100;
     mctx.font = `${REF}px ${FONT}`;
     const widths = words.map(w => mctx.measureText(w).width);
     const space = mctx.measureText(' ').width;
-    const m = mctx.measureText('HgÅ');
-    const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
 
-    const pad = Math.min(W, H) * MARGIN;
+    const pad = Math.min(W, H) * (+marginEl.value / 100);
     const aw = W - pad * 2, ah = H - pad * 2;
+    const stretch = fitEl.value === 'stretch';
 
-    // Try every line count; keep the layout that yields the biggest type.
-    let bestLayout = null;
+    // Tight ink box of a line of text at REF size.
+    const inkBox = text => {
+      const b = mctx.measureText(text);
+      return { text, L: b.actualBoundingBoxLeft, w: b.actualBoundingBoxLeft + b.actualBoundingBoxRight,
+               A: b.actualBoundingBoxAscent, h: b.actualBoundingBoxAscent + b.actualBoundingBoxDescent };
+    };
+
+    // Try every line count and pick the best layout.
+    //  stretch: every line fills the full width and an equal share of the height;
+    //           pick the line count that distorts the letter shapes least.
+    //  proportional: uniform scale; pick the line count giving the biggest type.
+    let best = null;
     for (let k = 1; k <= words.length; k++) {
-      const lines = balance(widths, space, k).map(([i, j]) => words.slice(i, j).join(' '));
-      const boxes = lines.map(l => mctx.measureText(l));
-      const maxW = Math.max(...boxes.map(b => b.actualBoundingBoxLeft + b.actualBoundingBoxRight));
-      const blockH = k * (asc + desc) + (k - 1) * LINE_GAP * REF;
-      const scale = Math.min(aw / maxW, ah / blockH);
-      if (!bestLayout || scale > bestLayout.scale) bestLayout = { lines, boxes, scale, blockH };
+      const lines = balance(widths, space, k).map(([i, j]) => inkBox(words.slice(i, j).join(' ')));
+      let score;
+      if (stretch) {
+        const slotH = ah / (k + (k - 1) * LINE_GAP);
+        score = -Math.max(...lines.map(l => Math.abs(Math.log((aw / l.w) / (slotH / l.h)))));
+      } else {
+        const maxW = Math.max(...lines.map(l => l.w));
+        const sumH = lines.reduce((t, l) => t + l.h, 0);
+        const lineH = Math.max(...lines.map(l => l.h));
+        score = Math.min(aw / maxW, ah / (sumH + (k - 1) * LINE_GAP * lineH));
+      }
+      if (!best || score > best.score) best = { lines, score };
     }
 
-    const { lines, boxes, scale, blockH } = bestLayout;
-    const size = REF * scale;
-    mctx.font = `${size}px ${FONT}`;
     mctx.fillStyle = '#fff';
     mctx.textBaseline = 'alphabetic';
-    let y = (H - blockH * scale) / 2 + asc * scale;
-    lines.forEach((line, idx) => {
-      const b = boxes[idx];
-      const w = (b.actualBoundingBoxLeft + b.actualBoundingBoxRight) * scale;
-      const x = (W - w) / 2 + b.actualBoundingBoxLeft * scale;
-      mctx.fillText(line, x, y);
-      y += (asc + desc + LINE_GAP * REF) * scale;
-    });
+    const k = best.lines.length;
+    if (stretch) {
+      const slotH = ah / (k + (k - 1) * LINE_GAP);
+      best.lines.forEach((l, i) => {
+        const sx = aw / l.w, sy = slotH / l.h;
+        const top = pad + i * slotH * (1 + LINE_GAP);
+        mctx.setTransform(sx, 0, 0, sy, pad + l.L * sx, top + l.A * sy);
+        mctx.fillText(l.text, 0, 0);
+      });
+    } else {
+      const sc = best.score;
+      const lineH = Math.max(...best.lines.map(l => l.h));
+      const blockH = best.lines.reduce((t, l) => t + l.h, 0) + (k - 1) * LINE_GAP * lineH;
+      let top = (H - blockH * sc) / 2;
+      best.lines.forEach(l => {
+        mctx.setTransform(sc, 0, 0, sc, (W - l.w * sc) / 2 + l.L * sc, top + l.A * sc);
+        mctx.fillText(l.text, 0, 0);
+        top += (l.h + LINE_GAP * lineH) * sc;
+      });
+    }
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
 
     // Threshold alpha so the letter edges are stark, not antialiased grey.
     const a = mctx.getImageData(0, 0, W, H).data;
@@ -173,6 +205,8 @@
   textEl.addEventListener('input', buildMask);
   stripeEl.addEventListener('input', () => dirty = true);
   modeEl.addEventListener('change', () => dirty = true);
+  fitEl.addEventListener('change', buildMask);
+  marginEl.addEventListener('input', buildMask);
   addEventListener('resize', resize);
   addEventListener('keydown', e => {
     if (e.target === textEl) return;
