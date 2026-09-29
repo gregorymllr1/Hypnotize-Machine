@@ -12,7 +12,7 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
     font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  canvas { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; }
   #panel { position: fixed; left: 16px; right: 16px; bottom: 16px; margin: 0 auto; max-width: 720px;
     display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 12px;
     background: var(--panel); border: 1px solid #fff; transition: opacity .3s; }
@@ -68,8 +68,10 @@
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 3);
-    W = Math.round(innerWidth * dpr);
-    H = Math.round(innerHeight * dpr);
+    // The artwork is always a square: the largest one that fits the window.
+    const side = Math.min(innerWidth, innerHeight);
+    canvas.style.width = canvas.style.height = side + 'px';
+    W = H = Math.round(side * dpr);
     canvas.width = mask.width = W;
     canvas.height = mask.height = H;
     img = ctx.createImageData(W, H);
@@ -171,22 +173,26 @@
 
   // Pure per-pixel stripes: no antialiasing, every edge exactly black or white.
   function paint() {
-    const s = Math.max(1, Math.round(+stripeEl.value * dpr)); // stripe thickness (px, measured along the axis)
-    const period = s * 2;
+    // Odd stripe width so a stripe is centred exactly on the square's centre,
+    // making the whole pattern point-symmetric (identical when rotated 180°).
+    const s = 2 * Math.floor(Math.max(1, +stripeEl.value * dpr) / 2) + 1;
+    const period = s * 2, half = (s - 1) / 2;
     const invert = modeEl.value === 'invert';
     const ph = Math.round(phase * dpr);
+    const on = t => (((t + half) % period) + period) % period < s;
     const d = img.data;
     const mk = maskData;
     let o = 0, p = 0;
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++, p++, o += 4) {
+        // Coordinates measured from the centre, so the pattern mirrors through it.
+        const sum = x + y + 1 - W, diff = x - y;
         let v;
         if (mk && mk[p]) {
-          v = invert
-            ? ((((x + y + ph) % period) + period) % period) >= s          // same angle, opposite phase
-            : ((((x - y - ph) % period) + period) % period) < s;          // perpendicular (−45°)
+          v = invert ? !on(sum + ph)          // same angle, opposite colour
+                     : on(diff - ph);         // perpendicular (−45°)
         } else {
-          v = ((((x + y - ph) % period) + period) % period) < s;          // background at +45°
+          v = on(sum - ph);                   // background at +45°
         }
         const c = v ? 255 : 0;
         d[o] = d[o + 1] = d[o + 2] = c; d[o + 3] = 255;
