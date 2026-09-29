@@ -6,7 +6,8 @@
 <title>Holo Text</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&display=block" rel="stylesheet">
+<!-- Loaded without blocking the page, so it still works offline or if Google Fonts is slow/blocked. -->
+<link href="https://fonts.googleapis.com/css2?family=Archivo+Black&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <style>
   :root { --bg: #000; --fg: #fff; --panel: rgba(0,0,0,.82); }
   * { box-sizing: border-box; }
@@ -24,6 +25,8 @@
   select, button { font: inherit; background: #000; color: #fff; border: 1px solid #fff; padding: 4px 8px; cursor: pointer; }
   button:hover, select:hover { background: #fff; color: #000; }
   .hint { opacity: .6; font-size: 12px; }
+  .msg { position: fixed; left: 16px; right: 16px; top: 16px; z-index: 9; margin: 0 auto; max-width: 640px;
+    padding: 12px 14px; background: #000; color: #fff; border: 1px solid #fff; }
 </style>
 </head>
 <body>
@@ -50,7 +53,16 @@
   <span class="hint">H hides this panel</span>
 </div>
 
+<noscript><p class="msg">This page needs JavaScript. Open the saved .html file in a web browser (Chrome, Safari, Firefox, Edge).</p></noscript>
+<p id="err" class="msg" hidden></p>
+
 <script>
+window.addEventListener('error', e => {
+  const el = document.getElementById('err');
+  el.hidden = false;
+  el.textContent = 'Something went wrong: ' + (e.message || e) +
+    '. If you copied this page, make sure the whole file was copied, from <!doctype html> to </html>.';
+});
 (() => {
   const canvas = document.getElementById('c');
   const ctx = canvas.getContext('2d');
@@ -225,9 +237,14 @@
     a.click();
   });
 
-  const start = () => { resize(); loop(); };
-  (document.fonts ? document.fonts.load(`100px "Archivo Black"`).then(() => document.fonts.ready) : Promise.resolve())
-    .catch(() => {}).then(start);
+  // Draw immediately with whatever font is available, then redraw once the
+  // web font arrives (it may never arrive offline — that's fine).
+  resize();
+  loop();
+  if (document.fonts) {
+    document.fonts.load(`100px "Archivo Black"`).then(buildMask, () => {});
+    document.fonts.addEventListener && document.fonts.addEventListener('loadingdone', buildMask);
+  }
 })();
 </script>
 </body>
