@@ -18,6 +18,8 @@
     display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 12px;
     background: var(--panel); border: 1px solid #fff; transition: opacity .3s; }
   #panel.hidden { opacity: 0; pointer-events: none; }
+  #panel { max-height: 50vh; overflow-y: auto; }
+  select:disabled, label.off { opacity: .4; }
   #text { flex: 1 1 100%; font: inherit; font-size: 16px; padding: 8px 10px; background: #000; color: #fff;
     border: 1px solid #fff; outline: none; }
   label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
@@ -34,13 +36,32 @@
 
 <div id="panel">
   <input id="text" type="text" value="FLOAT" placeholder="Type something…" autocomplete="off" spellcheck="false">
-  <label>Stripe <input id="stripe" type="range" min="2" max="40" value="8"></label>
-  <label>Mode
-    <select id="mode">
-      <option value="cross">Crossed (±45°)</option>
-      <option value="invert">Same 45°, inverted</option>
+  <label>Effect
+    <select id="effect">
+      <option value="cross">Crossed stripes (±45°)</option>
+      <option value="invert">Inverted stripes (same 45°)</option>
+      <option value="ouchi">Ouchi bricks (move your eyes)</option>
+      <option value="reveal">Reveal in motion</option>
+      <option value="anaglyph">3D glasses (red/cyan)</option>
     </select>
   </label>
+  <label>Colours
+    <select id="palette">
+      <option value="bw">Black &amp; white</option>
+      <option value="redblue">Red on blue (floats forward)</option>
+      <option value="bluered">Blue on red (sinks back)</option>
+      <option value="vibe-rc">Vibrating red/cyan</option>
+      <option value="vibe-ob">Vibrating orange/blue</option>
+    </select>
+  </label>
+  <label>Stripe <input id="stripe" type="range" min="2" max="40" value="8"></label>
+  <label title="Finer letter stripes read as further away, coarser as nearer">Letter stripes
+    <input id="fgscale" type="range" min="0.4" max="2.5" step="0.1" value="1"></label>
+  <label><input id="shadow" type="checkbox"> Shadow</label>
+  <label title="Shadow offset / 3D depth">Pop <input id="pop" type="range" min="0" max="6" step="0.25" value="2"></label>
+  <label><input id="drift" type="checkbox"> Drift</label>
+  <label>Speed <input id="speed" type="range" min="0.1" max="4" step="0.1" value="1"></label>
+  <label><input id="breathe" type="checkbox"> Breathe</label>
   <label>Fit
     <select id="fit">
       <option value="stretch">Stretch to fill</option>
@@ -48,9 +69,9 @@
     </select>
   </label>
   <label>Margin <input id="margin" type="range" min="0" max="15" value="3"></label>
-  <label><input id="drift" type="checkbox"> Drift</label>
   <button id="save">Save PNG</button>
-  <span class="hint">H hides this panel</span>
+  <button id="hide">Hide</button>
+  <span class="hint" id="hint">Tap the artwork or press H to show/hide this panel</span>
 </div>
 
 <noscript><p class="msg">This page needs JavaScript. Open the saved .html file in a web browser (Chrome, Safari, Firefox, Edge).</p></noscript>
@@ -69,17 +90,29 @@ window.addEventListener('error', e => {
   const mask = document.createElement('canvas');
   const mctx = mask.getContext('2d', { willReadFrequently: true });
   const $ = id => document.getElementById(id);
-  const textEl = $('text'), stripeEl = $('stripe'), modeEl = $('mode'), driftEl = $('drift'),
-        fitEl = $('fit'), marginEl = $('margin');
+  const textEl = $('text'), stripeEl = $('stripe'), effectEl = $('effect'), paletteEl = $('palette'),
+        fgscaleEl = $('fgscale'), shadowEl = $('shadow'), popEl = $('pop'), driftEl = $('drift'),
+        speedEl = $('speed'), breatheEl = $('breathe'), fitEl = $('fit'), marginEl = $('margin');
+
+  // Colour pairs [on, off] for the background stripes and the letter stripes.
+  // The vibrating pairs are matched in brightness, so their edges shimmer.
+  const PALETTES = {
+    'bw':      { bg: [[255,255,255], [0,0,0]],     fg: [[255,255,255], [0,0,0]] },
+    'redblue': { bg: [[0,40,255],    [0,0,0]],     fg: [[255,0,0],     [0,0,0]] },
+    'bluered': { bg: [[255,0,0],     [0,0,0]],     fg: [[0,40,255],    [0,0,0]] },
+    'vibe-rc': { bg: [[0,143,143],   [0,0,0]],     fg: [[255,0,0],     [0,143,143]] },
+    'vibe-ob': { bg: [[0,171,255],   [0,0,0]],     fg: [[255,128,0],   [0,171,255]] },
+  };
 
   const FONT = '"Archivo Black", "Arial Black", Impact, sans-serif';
   const LINE_GAP = 0.14;     // gap between lines, as a fraction of each line's height
   const REF = 200;           // reference font size for measuring
 
-  let W = 0, H = 0, dpr = 1, maskData = null, img = null, phase = 0, dirty = true;
+  let W = 0, H = 0, dpr = 1, maskData = null, img = null, dirty = true;
+  let phase = 0, breath = 0, lastT = 0;
 
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
     // The artwork is always a square: the largest one that fits the window.
     const side = Math.min(innerWidth, innerHeight);
     canvas.style.width = canvas.style.height = side + 'px';
@@ -183,46 +216,106 @@ window.addEventListener('error', e => {
     dirty = true;
   }
 
-  // Pure per-pixel stripes: no antialiasing, every edge exactly black or white.
+  const mod = (a, m) => ((a % m) + m) % m;
+  // Odd width when not breathing, so a stripe is centred exactly on the square's
+  // centre and the pattern is point-symmetric (identical when rotated 180°).
+  const stripeWidth = w => breatheEl.checked ? Math.max(1.5, w) : 2 * Math.floor(Math.max(1, w) / 2) + 1;
+
+  // Every pixel is set to exactly one of the palette colours: no antialiasing.
   function paint() {
-    // Odd stripe width so a stripe is centred exactly on the square's centre,
-    // making the whole pattern point-symmetric (identical when rotated 180°).
-    const s = 2 * Math.floor(Math.max(1, +stripeEl.value * dpr) / 2) + 1;
-    const period = s * 2, half = (s - 1) / 2;
-    const invert = modeEl.value === 'invert';
-    const ph = Math.round(phase * dpr);
-    const on = t => (((t + half) % period) + period) % period < s;
-    const d = img.data;
-    const mk = maskData;
+    const effect = effectEl.value;
+    const breatheK = breatheEl.checked ? 1 + 0.45 * Math.sin(breath) : 1;
+    const sb = stripeWidth(+stripeEl.value * dpr * breatheK);                  // background stripe
+    const sf = stripeWidth(+stripeEl.value * dpr * breatheK * +fgscaleEl.value); // letter stripe
+    const pb = sb * 2, pf = sf * 2, hb = sb / 2 - 0.5, hf = sf / 2 - 0.5;
+    let ph = phase * dpr, phB = ph;
+    // Reveal: background holds still and only the letters' stripes move;
+    // when paused the letters snap back into the background and vanish.
+    if (effect === 'reveal') { phB = 0; if (!driftEl.checked) ph = 0; }
+    const onB = t => mod(t + hb, pb) < sb;
+    const onF = t => mod(t + hf, pf) < sf;
+    const cx = W / 2 - 0.5;
+
+    // Pattern value (true = "on" colour) for each region at pixel (x, y).
+    let bgAt, fgAt;
+    if (effect === 'ouchi') {
+      // Bricks 4:1, horizontal behind, vertical in the letters.
+      bgAt = (x, y) => ((Math.floor((x - cx - phB) / (2 * pb)) + Math.floor((y - cx) / sb)) & 1) === 0;
+      fgAt = (x, y) => ((Math.floor((x - cx) / sf) + Math.floor((y - cx + ph) / (2 * pf))) & 1) === 0;
+    } else {
+      bgAt = (x, y) => onB(x + y - 2 * cx - phB);
+      fgAt = effect === 'invert' ? (x, y) => !onF(x + y - 2 * cx + ph)
+           : effect === 'reveal' ? (x, y) => onF(x + y - 2 * cx - ph)
+           : (x, y) => onF(x - y - ph);
+    }
+
+    const d = img.data, mk = maskData;
+    const pop = Math.round(+popEl.value / 100 * W);
     let o = 0, p = 0;
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++, p++, o += 4) {
-        // Coordinates measured from the centre, so the pattern mirrors through it.
-        const sum = x + y + 1 - W, diff = x - y;
-        let v;
-        if (mk && mk[p]) {
-          v = invert ? !on(sum + ph)          // same angle, opposite colour
-                     : on(diff - ph);         // perpendicular (−45°)
-        } else {
-          v = on(sum - ph);                   // background at +45°
+
+    if (effect === 'anaglyph') {
+      // Red channel = left eye, cyan = right eye. The letters (with their own
+      // stripes) are shifted in opposite directions for each eye, so through
+      // red/cyan glasses they sit in front of the screen.
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++, p++, o += 4) {
+          const xl = x - pop, xr = x + pop;
+          const inL = mk && xl >= 0 && mk[p - pop];
+          const inR = mk && xr < W && mk[p + pop];
+          const l = inL ? onF(xl - y) : bgAt(x, y);
+          const r = inR ? onF(xr - y) : bgAt(x, y);
+          d[o] = l ? 255 : 0; d[o + 1] = d[o + 2] = r ? 255 : 0; d[o + 3] = 255;
         }
-        const c = v ? 255 : 0;
-        d[o] = d[o + 1] = d[o + 2] = c; d[o + 3] = 255;
+      }
+    } else {
+      const pal = PALETTES[paletteEl.value] || PALETTES.bw;
+      const [bOn, bOff] = pal.bg, [fOn, fOff] = pal.fg;
+      const shadow = shadowEl.checked && mk && pop > 0 && effect !== 'reveal';
+      const sh = pop * W + pop; // mask index offset for a shadow cast down-right
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++, p++, o += 4) {
+          let c;
+          if (mk && mk[p]) c = fgAt(x, y) ? fOn : fOff;
+          else if (shadow && x >= pop && y >= pop && mk[p - sh]) c = bgAt(x, y) ? bOff : bOn; // inverted
+          else c = bgAt(x, y) ? bOn : bOff;
+          d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+        }
       }
     }
     ctx.putImageData(img, 0, 0);
     dirty = false;
   }
 
-  function loop() {
-    if (driftEl.checked) { phase += 0.5; dirty = true; }
+  function loop(t) {
+    const dt = lastT ? Math.min(t - lastT, 100) / 1000 : 0;
+    lastT = t;
+    if (driftEl.checked) { phase += dt * 30 * +speedEl.value; dirty = true; }
+    if (breatheEl.checked) { breath += dt * 1.6 * +speedEl.value; dirty = true; }
     if (dirty) paint();
     requestAnimationFrame(loop);
   }
 
+  // Grey out controls that don't apply to the chosen effect.
+  function syncControls() {
+    const e = effectEl.value;
+    paletteEl.disabled = e === 'anaglyph';
+    shadowEl.disabled = e === 'anaglyph' || e === 'reveal';
+    shadowEl.parentElement.classList.toggle('off', shadowEl.disabled);
+    if (e === 'reveal' && !driftEl.checked) driftEl.checked = true; // invisible when still
+    $('hint').textContent =
+      e === 'reveal'   ? 'The words only exist while they move. Untick Drift and they vanish.' :
+      e === 'ouchi'    ? 'Let your eyes wander or scroll around: the letters slide on their own layer.' :
+      e === 'anaglyph' ? 'Wear red/cyan glasses (red on the left eye). Pop sets the depth.' :
+      paletteEl.value === 'redblue' || paletteEl.value === 'bluered'
+                       ? 'Best in a dim room: red looks nearer than blue for most people.' :
+                         'Tap the artwork or press H to show/hide this panel';
+    dirty = true;
+  }
+
   textEl.addEventListener('input', buildMask);
-  stripeEl.addEventListener('input', () => dirty = true);
-  modeEl.addEventListener('change', () => dirty = true);
+  for (const el of [stripeEl, fgscaleEl, shadowEl, popEl, driftEl, breatheEl]) el.addEventListener('input', () => dirty = true);
+  effectEl.addEventListener('change', syncControls);
+  paletteEl.addEventListener('change', syncControls);
   fitEl.addEventListener('change', buildMask);
   marginEl.addEventListener('input', buildMask);
   addEventListener('resize', resize);
@@ -230,6 +323,9 @@ window.addEventListener('error', e => {
     if (e.target === textEl) return;
     if (e.key === 'h' || e.key === 'H') $('panel').classList.toggle('hidden');
   });
+  // Tap-friendly show/hide for phones and tablets.
+  canvas.addEventListener('click', () => $('panel').classList.toggle('hidden'));
+  $('hide').addEventListener('click', () => $('panel').classList.add('hidden'));
   $('save').addEventListener('click', () => {
     const a = document.createElement('a');
     a.download = (textEl.value.trim() || 'holo').replace(/[^\w-]+/g, '_') + '.png';
@@ -240,7 +336,8 @@ window.addEventListener('error', e => {
   // Draw immediately with whatever font is available, then redraw once the
   // web font arrives (it may never arrive offline — that's fine).
   resize();
-  loop();
+  syncControls();
+  requestAnimationFrame(loop);
   if (document.fonts) {
     document.fonts.load(`100px "Archivo Black"`).then(buildMask, () => {});
     document.fonts.addEventListener && document.fonts.addEventListener('loadingdone', buildMask);
