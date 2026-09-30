@@ -70,6 +70,8 @@
   </label>
   <label>Margin <input id="margin" type="range" min="0" max="15" value="3"></label>
   <button id="save">Save PNG</button>
+  <button id="record" title="Records one seamless loop of the current motion">Save video</button>
+  <button id="savepage" title="A copy of this page with your settings built in: opens straight into the moving artwork">Save live page</button>
   <button id="hide">Hide</button>
   <span class="hint" id="hint">Tap the artwork or press H to show/hide this panel</span>
 </div>
@@ -109,7 +111,7 @@ window.addEventListener('error', e => {
   const REF = 200;           // reference font size for measuring
 
   let W = 0, H = 0, dpr = 1, maskData = null, img = null, dirty = true;
-  let phase = 0, breath = 0, lastT = 0;
+  let phase = 0, breath = 0, lastT = 0, rec = null;
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -289,8 +291,26 @@ window.addEventListener('error', e => {
   function loop(t) {
     const dt = lastT ? Math.min(t - lastT, 100) / 1000 : 0;
     lastT = t;
-    if (driftEl.checked) { phase += dt * 30 * +speedEl.value; dirty = true; }
-    if (breatheEl.checked) { breath += dt * 1.6 * +speedEl.value; dirty = true; }
+    if (rec) {
+      // While recording, motion is driven by the clock so the last frame
+      // lines up exactly with the first and the video loops seamlessly.
+      // Frame i shows exactly i/N of the loop; after frame N-1 comes frame 0 again.
+      if (rec.t0 !== null) {
+        const i = Math.floor((t - rec.t0) / 1000 * rec.fps);
+        if (i >= rec.N) finishRecording();
+        else if (i !== rec.i) {
+          rec.i = i;
+          const u = i / rec.N;
+          if (rec.drift) phase = rec.phase0 + rec.dist * u;
+          if (rec.breathe) breath = rec.breath0 + 2 * Math.PI * rec.k * u;
+          paint();
+          rec.track.requestFrame ? rec.track.requestFrame() : rec.stream.requestFrame && rec.stream.requestFrame();
+        }
+      }
+    } else {
+      if (driftEl.checked) { phase += dt * 30 * +speedEl.value; dirty = true; }
+      if (breatheEl.checked) { breath += dt * 1.6 * +speedEl.value; dirty = true; }
+    }
     if (dirty) paint();
     requestAnimationFrame(loop);
   }
@@ -326,12 +346,117 @@ window.addEventListener('error', e => {
   // Tap-friendly show/hide for phones and tablets.
   canvas.addEventListener('click', () => $('panel').classList.toggle('hidden'));
   $('hide').addEventListener('click', () => $('panel').classList.add('hidden'));
-  $('save').addEventListener('click', () => {
+  const baseName = () => (textEl.value.trim() || 'holo').replace(/[^\w-]+/g, '_');
+  const download = (href, name) => {
     const a = document.createElement('a');
-    a.download = (textEl.value.trim() || 'holo').replace(/[^\w-]+/g, '_') + '.png';
-    a.href = canvas.toDataURL('image/png');
-    a.click();
+    a.download = name; a.href = href;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  // ---- Video: record exactly one loop of the motion ----
+  // Smallest drift distance (device px) after which both stripe patterns repeat.
+  function loopDistance() {
+    const e = effectEl.value;
+    const sb = stripeWidth(+stripeEl.value * dpr), sf = stripeWidth(+stripeEl.value * dpr * +fgscaleEl.value);
+    const k = e === 'ouchi' ? 4 : 2;       // bricks repeat every 2 bricks along their long side
+    const units = e === 'reveal' ? [k * sf] : e === 'anaglyph' ? [k * sb] : [k * sb, k * sf];
+    const maxPx = 30 * dpr * +speedEl.value * 30;   // keep loops under ~30 s
+    let best = units[0], bestErr = Infinity;
+    for (let n = 1; n * units[0] <= Math.max(maxPx, units[0]); n++) {
+      const dist = n * units[0];
+      const err = units.slice(1).reduce((m, u) => Math.max(m, Math.abs(dist / u - Math.round(dist / u)) * u), 0);
+      if (err < 0.5) return dist;            // under half a pixel: invisible seam
+      if (err < bestErr) { bestErr = err; best = dist; }
+    }
+    return best;
+  }
+
+  const recBtn = $('record');
+  function startRecording() {
+    if (!driftEl.checked && !breatheEl.checked) {
+      alert('Nothing is moving yet. Turn on Drift and/or Breathe first, then Save video.');
+      return;
+    }
+    if (!canvas.captureStream || !window.MediaRecorder) {
+      alert('This browser can\'t record video. Try Chrome, Edge, Firefox or Safari 14.1+, or use "Save live page".');
+      return;
+    }
+    const speed = +speedEl.value;
+    let T, dist = 0, k = 0;
+    if (driftEl.checked) {
+      dist = loopDistance() / dpr;             // in CSS px, the unit of `phase`
+      T = dist / (30 * speed);
+    } else T = 2 * Math.PI / (1.6 * speed);
+    const reps = Math.max(1, Math.ceil(4 / T)); // at least ~4 s long
+    T *= reps; dist *= reps;
+    if (breatheEl.checked) k = Math.max(1, Math.round(T / (2 * Math.PI / (1.6 * speed))));
+
+    const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    const fps = 60;
+    const stream = canvas.captureStream(0);     // frames are pushed manually, one per loop step
+    const track = stream.getVideoTracks()[0];
+    const mr = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 20e6 });
+    const chunks = [];
+    mr.ondataavailable = ev => ev.data.size && chunks.push(ev.data);
+    mr.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      const ext = (mr.mimeType || type).includes('mp4') ? 'mp4' : 'webm';
+      const url = URL.createObjectURL(new Blob(chunks, { type: mr.mimeType || type }));
+      download(url, baseName() + '.' + ext);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      recBtn.textContent = 'Save video'; recBtn.disabled = false;
+    };
+    rec = { mr, stream, track, fps, N: Math.round(T * fps), i: 0, T, dist, k,
+            drift: driftEl.checked, breathe: breatheEl.checked,
+            phase0: phase, breath0: breath, t0: null };
+    // Start the clock only once the recorder is actually running, so the
+    // first frame of the loop isn't lost to start-up delay.
+    mr.onstart = () => { if (rec && rec.t0 === null) rec.t0 = performance.now(); };
+    mr.start(250);
+    // The recorder needs a first frame before it reports "started": push frame 0.
+    paint(); track.requestFrame && track.requestFrame();
+    setTimeout(() => { if (rec && rec.t0 === null) rec.t0 = performance.now(); }, 1000);
+    recBtn.disabled = true;
+    recBtn.textContent = `Recording ${T.toFixed(1)} s…`;
+  }
+  function finishRecording() {
+    const r = rec; rec = null;
+    r.mr.stop();
+  }
+  recBtn.addEventListener('click', startRecording);
+
+  // ---- Live page: this page with the current settings baked in ----
+  const SETTINGS = ['text', 'effect', 'palette', 'stripe', 'fgscale', 'shadow', 'pop',
+                    'drift', 'speed', 'breathe', 'fit', 'margin'];
+  $('savepage').addEventListener('click', () => {
+    const preset = {};
+    for (const id of SETTINGS) { const el = $(id); preset[id] = el.type === 'checkbox' ? el.checked : el.value; }
+    const old = document.getElementById('preset'); if (old) old.remove();
+    const tag = document.createElement('script');
+    tag.id = 'preset';
+    tag.textContent = 'window.HOLO_PRESET = ' + JSON.stringify(preset).replace(/</g, '\\u003c') + ';';
+    document.head.appendChild(tag);
+    const clone = document.documentElement.cloneNode(true);
+    tag.remove();
+    clone.querySelector('#panel').classList.add('hidden');   // open straight into the artwork
+    clone.querySelector('#err').hidden = true;
+    const c = clone.querySelector('#c'); c.removeAttribute('width'); c.removeAttribute('height'); c.removeAttribute('style');
+    const html = '<!doctype html>\n' + clone.outerHTML;
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    download(url, baseName() + '.html');
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   });
+  // Apply a baked-in preset (from "Save live page").
+  if (window.HOLO_PRESET) {
+    for (const [id, v] of Object.entries(window.HOLO_PRESET)) {
+      const el = $(id); if (!el) continue;
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+    }
+    $('panel').classList.add('hidden');
+  }
+
+  $('save').addEventListener('click', () => download(canvas.toDataURL('image/png'), baseName() + '.png'));
 
   // Draw immediately with whatever font is available, then redraw once the
   // web font arrives (it may never arrive offline — that's fine).
