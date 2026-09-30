@@ -9,24 +9,33 @@
 <!-- Loaded without blocking the page, so it still works offline or if Google Fonts is slow/blocked. -->
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <style>
-  :root { --bg: #000; --fg: #fff; --panel: rgba(0,0,0,.82); }
+  :root { --bg: #000; --fg: #fff; --panel: rgba(0,0,0,.85); }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
     font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
   canvas { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; }
-  #panel { position: fixed; left: 16px; right: 16px; bottom: 16px; margin: 0 auto; max-width: 720px;
-    display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 12px;
+  #panel { position: fixed; left: 16px; right: 16px; bottom: 16px; margin: 0 auto; max-width: 760px;
+    max-height: 60vh; overflow-y: auto; padding: 10px 12px;
     background: var(--panel); border: 1px solid #fff; transition: opacity .3s; }
   #panel.hidden { opacity: 0; pointer-events: none; }
-  #panel { max-height: 50vh; overflow-y: auto; }
-  select:disabled, label.off { opacity: .4; }
-  #text { flex: 1 1 100%; font: inherit; font-size: 16px; padding: 8px 10px; background: #000; color: #fff;
+  .row { display: flex; gap: 8px; align-items: center; }
+  #text { flex: 1; min-width: 0; font: inherit; font-size: 16px; padding: 8px 10px; background: #000; color: #fff;
     border: 1px solid #fff; outline: none; }
-  label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .tabs { display: flex; margin: 10px 0; border-bottom: 1px solid #fff; overflow-x: auto; }
+  .tabs button { border-bottom: none; margin-right: -1px; padding: 5px 12px; }
+  .tabs button[aria-selected=true] { background: #fff; color: #000; }
+  .pane { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  label, .grp { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+  label.off, .grp.off { opacity: .35; }
   input[type=range] { width: 110px; accent-color: #fff; }
+  input[type=number] { width: 64px; font: inherit; background: #000; color: #fff; border: 1px solid #fff; padding: 3px 6px; }
   select, button { font: inherit; background: #000; color: #fff; border: 1px solid #fff; padding: 4px 8px; cursor: pointer; }
-  button:hover, select:hover { background: #fff; color: #000; }
-  .hint { opacity: .6; font-size: 12px; }
+  button:hover:not(:disabled), select:hover:not(:disabled) { background: #fff; color: #000; }
+  button:disabled, select:disabled { cursor: default; }
+  #record:disabled { opacity: .5; }
+  .hint { margin-top: 10px; opacity: .7; font-size: 12px; }
+  .note { flex-basis: 100%; margin: 0; opacity: .7; font-size: 12px; }
   .msg { position: fixed; left: 16px; right: 16px; top: 16px; z-index: 9; margin: 0 auto; max-width: 640px;
     padding: 12px 14px; background: #000; color: #fff; border: 1px solid #fff; }
 </style>
@@ -35,45 +44,112 @@
 <canvas id="c"></canvas>
 
 <div id="panel">
-  <input id="text" type="text" value="FLOAT" placeholder="Type something…" autocomplete="off" spellcheck="false">
-  <label>Effect
-    <select id="effect">
-      <option value="cross">Crossed stripes (±45°)</option>
-      <option value="invert">Inverted stripes (same 45°)</option>
-      <option value="ouchi">Ouchi bricks (move your eyes)</option>
-      <option value="reveal">Reveal in motion</option>
-      <option value="anaglyph">3D glasses (red/cyan)</option>
-    </select>
-  </label>
-  <label>Colours
-    <select id="palette">
-      <option value="bw">Black &amp; white</option>
-      <option value="redblue">Red on blue (floats forward)</option>
-      <option value="bluered">Blue on red (sinks back)</option>
-      <option value="vibe-rc">Vibrating red/cyan</option>
-      <option value="vibe-ob">Vibrating orange/blue</option>
-    </select>
-  </label>
-  <label>Stripe <input id="stripe" type="range" min="2" max="40" value="8"></label>
-  <label title="Finer letter stripes read as further away, coarser as nearer">Letter stripes
-    <input id="fgscale" type="range" min="0.4" max="2.5" step="0.1" value="1"></label>
-  <label><input id="shadow" type="checkbox"> Shadow</label>
-  <label title="Shadow offset / 3D depth">Pop <input id="pop" type="range" min="0" max="6" step="0.25" value="2"></label>
-  <label><input id="drift" type="checkbox"> Drift</label>
-  <label>Speed <input id="speed" type="range" min="0.1" max="4" step="0.1" value="1"></label>
-  <label><input id="breathe" type="checkbox"> Breathe</label>
-  <label>Fit
-    <select id="fit">
-      <option value="stretch">Stretch to fill</option>
-      <option value="proportional">Proportional</option>
-    </select>
-  </label>
-  <label>Margin <input id="margin" type="range" min="0" max="15" value="3"></label>
-  <button id="save">Save PNG</button>
-  <button id="record" title="Records one seamless loop of the current motion">Save video</button>
-  <button id="savepage" title="A copy of this page with your settings built in: opens straight into the moving artwork">Save live page</button>
-  <button id="hide">Hide</button>
-  <span class="hint" id="hint">Tap the artwork or press H to show/hide this panel</span>
+  <div class="row">
+    <input id="text" type="text" value="FLOAT" placeholder="Type something…" autocomplete="off" spellcheck="false" aria-label="Text">
+    <button id="hide">Hide</button>
+  </div>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="pattern">Pattern</button>
+    <button role="tab" aria-selected="false" data-tab="colour">Colour</button>
+    <button role="tab" aria-selected="false" data-tab="motion">Motion</button>
+    <button role="tab" aria-selected="false" data-tab="depth">3D</button>
+    <button role="tab" aria-selected="false" data-tab="save">Save</button>
+  </div>
+
+  <div class="pane" data-pane="pattern">
+    <label>Effect
+      <select id="effect">
+        <optgroup label="Stripes">
+          <option value="cross">Crossed stripes (±45°)</option>
+          <option value="invert">Inverted stripes (same 45°)</option>
+          <option value="moire">Moiré</option>
+          <option value="spin">Spinning fill</option>
+          <option value="reveal">Reveal in motion</option>
+        </optgroup>
+        <optgroup label="Hypnotic">
+          <option value="spiral">Hypnotic spiral</option>
+          <option value="tunnel">Tunnel</option>
+          <option value="outlines">Radiating outlines</option>
+        </optgroup>
+        <optgroup label="Depth">
+          <option value="inflate">Inflated letters</option>
+          <option value="anaglyph">3D glasses (red/cyan)</option>
+          <option value="magiceye">Magic Eye</option>
+        </optgroup>
+        <optgroup label="Tricks of the eye">
+          <option value="ouchi">Ouchi bricks</option>
+          <option value="stillmove">Still image that moves</option>
+          <option value="afterimage">Afterimage ghost</option>
+        </optgroup>
+      </select>
+    </label>
+    <label id="amountWrap"><span id="amountName">Amount</span> <input id="amount" type="range"></label>
+    <label>Stripe <input id="stripe" type="range" min="2" max="40" value="8"></label>
+    <label title="Finer letter stripes read as further away, coarser as nearer">Letter stripes
+      <input id="fgscale" type="range" min="0.4" max="2.5" step="0.1" value="1"></label>
+    <label title="Makes the stripes ripple like water">Liquid <input id="liquid" type="range" min="0" max="10" step="0.5" value="0"></label>
+    <label>Kaleidoscope
+      <select id="kaleido">
+        <option value="0">Off</option>
+        <option value="4">4-way</option>
+        <option value="6">6-way</option>
+        <option value="8">8-way</option>
+        <option value="12">12-way</option>
+      </select>
+    </label>
+    <label>Fit
+      <select id="fit">
+        <option value="stretch">Stretch to fill</option>
+        <option value="proportional">Proportional</option>
+      </select>
+    </label>
+    <label>Margin <input id="margin" type="range" min="0" max="15" value="3"></label>
+  </div>
+
+  <div class="pane" data-pane="colour" hidden>
+    <label>Colours
+      <select id="palette">
+        <option value="bw">Black &amp; white</option>
+        <option value="redblue">Red on blue (floats forward)</option>
+        <option value="bluered">Blue on red (sinks back)</option>
+        <option value="vibe-rc">Vibrating red/cyan</option>
+        <option value="vibe-ob">Vibrating orange/blue</option>
+      </select>
+    </label>
+    <label title="A rainbow sheen on the letters, like holographic foil. Moves with Drift or Hologram tilt."><input id="foil" type="checkbox"> Rainbow foil</label>
+  </div>
+
+  <div class="pane" data-pane="motion" hidden>
+    <label><input id="drift" type="checkbox"> Drift</label>
+    <label>Speed <input id="speed" type="range" min="0.1" max="4" step="0.1" value="1"></label>
+    <label><input id="breathe" type="checkbox"> Breathe</label>
+    <label>Pulse
+      <select id="pulse">
+        <option value="off">Off</option>
+        <option value="bpm">To a beat (BPM)</option>
+        <option value="mic">To music (microphone)</option>
+      </select>
+    </label>
+    <span class="grp" id="bpmWrap">BPM <input id="bpm" type="number" min="40" max="180" value="120" aria-label="Beats per minute">
+      <button id="tap" type="button" title="Tap in time with the music to set the BPM">Tap</button></span>
+    <label>Pulse strength <input id="pulseamt" type="range" min="0.2" max="2" step="0.1" value="1"></label>
+  </div>
+
+  <div class="pane" data-pane="depth" hidden>
+    <label><input id="shadow" type="checkbox"> Shadow</label>
+    <label title="Shadow offset, and the depth for 3D glasses">Pop <input id="pop" type="range" min="0" max="6" step="0.25" value="2"></label>
+    <label title="The letters slide against the background as you tilt your phone or move the mouse"><input id="tilt" type="checkbox"> Hologram tilt</label>
+    <label>Tilt depth <input id="tiltdepth" type="range" min="0.5" max="6" step="0.25" value="2.5"></label>
+  </div>
+
+  <div class="pane" data-pane="save" hidden>
+    <button id="save">Save PNG</button>
+    <button id="record" title="Records one seamless loop of the current motion">Save video</button>
+    <button id="savepage" title="A copy of this page with your settings built in: opens straight into the moving artwork">Save live page</button>
+    <p class="note">Moving or pulsing high-contrast stripes can trigger seizures in people with photosensitive epilepsy. If you share videos, add a warning.</p>
+  </div>
+
+  <div class="hint" id="hint"></div>
 </div>
 
 <noscript><p class="msg">This page needs JavaScript. Open the saved .html file in a web browser (Chrome, Safari, Firefox, Edge).</p></noscript>
@@ -87,14 +163,25 @@ window.addEventListener('error', e => {
     '. If you copied this page, make sure the whole file was copied, from <!doctype html> to </html>.';
 });
 (() => {
-  const canvas = document.getElementById('c');
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const canvas = $('c');
   const ctx = canvas.getContext('2d');
   const mask = document.createElement('canvas');
   const mctx = mask.getContext('2d', { willReadFrequently: true });
-  const $ = id => document.getElementById(id);
-  const textEl = $('text'), stripeEl = $('stripe'), effectEl = $('effect'), paletteEl = $('palette'),
-        fgscaleEl = $('fgscale'), shadowEl = $('shadow'), popEl = $('pop'), driftEl = $('drift'),
-        speedEl = $('speed'), breatheEl = $('breathe'), fitEl = $('fit'), marginEl = $('margin');
+  const ui = {};
+  for (const id of ['panel', 'text', 'hide', 'effect', 'amountWrap', 'amountName', 'amount', 'stripe',
+                    'fgscale', 'liquid', 'kaleido', 'fit', 'margin', 'palette', 'foil', 'drift', 'speed',
+                    'breathe', 'pulse', 'bpmWrap', 'bpm', 'tap', 'pulseamt', 'shadow', 'pop', 'tilt',
+                    'tiltdepth', 'save', 'record', 'savepage', 'hint'])
+    ui[id] = $(id);
+
+  const FONT = '"Archivo Black", "Arial Black", Impact, sans-serif';
+  const LINE_GAP = 0.14;     // gap between lines, as a fraction of each line's height
+  const REF = 200;           // reference font size for measuring
+  const TAU = Math.PI * 2, S2 = Math.SQRT2;
+  const BLANK = 8;           // afterimage: seconds of blank screen after the stare
+  const SPIN = 360;          // spinning fill: drift distance (CSS px) for one full turn
 
   // Colour pairs [on, off] for the background stripes and the letter stripes.
   // The vibrating pairs are matched in brightness, so their edges shimmer.
@@ -106,22 +193,80 @@ window.addEventListener('error', e => {
     'vibe-ob': { bg: [[0,171,255],   [0,0,0]],     fg: [[255,128,0],   [0,171,255]] },
   };
 
-  const FONT = '"Archivo Black", "Arial Black", Impact, sans-serif';
-  const LINE_GAP = 0.14;     // gap between lines, as a fraction of each line's height
-  const REF = 200;           // reference font size for measuring
+  // Which shared controls each effect uses, and what its Amount slider means
+  // ([label, min, max, step, default]).
+  const ALL = { fgscale: 1, liquid: 1, kaleido: 1, palette: 1, foil: 1, shadow: 1, tilt: 1, stripe: 1, motion: 1 };
+  const FX = {
+    cross:      { ...ALL },
+    invert:     { ...ALL },
+    moire:      { ...ALL, fgscale: 0, amount: ['Moiré angle', 1, 12, 0.5, 4],
+                  hint: 'Turn on Drift (Motion tab): a tiny movement sweeps huge ghostly bands through the letters. Fine stripes work best.' },
+    spin:       { ...ALL, hint: 'Turn on Drift (Motion tab) to spin the stripes inside the letters.' },
+    reveal:     { ...ALL, fgscale: 0, kaleido: 0, shadow: 0,
+                  hint: 'The words only exist while they move. Untick Drift and they vanish.' },
+    spiral:     { ...ALL, amount: ['Arms', 1, 12, 1, 3],
+                  hint: 'Turn on Drift (Motion tab), stare at the centre for 30 seconds, then look at your hand: it seems to shrink or swell.' },
+    tunnel:     { ...ALL, amount: ['Spokes', 8, 96, 4, 40],
+                  hint: 'Turn on Drift (Motion tab) to fly into the tunnel. Stare at the centre for 30 seconds, then look at something still.' },
+    outlines:   { ...ALL, kaleido: 0,
+                  hint: 'Turn on Drift (Motion tab) and the outlines pour out of the words like ripples.' },
+    inflate:    { ...ALL, fgscale: 0, kaleido: 0, amount: ['Puffiness', 0.2, 4, 0.1, 1.2],
+                  hint: 'The stripes bend over the letters like contour lines over hills.' },
+    anaglyph:   { ...ALL, palette: 0, liquid: 0, kaleido: 0, foil: 0, shadow: 0, tilt: 0,
+                  hint: 'Wear red/cyan glasses (red over the left eye). Pop (3D tab) sets the depth.' },
+    magiceye:   { ...ALL, fgscale: 0, liquid: 0, kaleido: 0, foil: 0, shadow: 0, tilt: 0, amount: ['Depth', 1, 5, 0.5, 3],
+                  hint: 'Relax your eyes as if looking through the screen at something far away, until the two dots at the top become three: the words float out. (Crossing your eyes makes them sink in instead.)' },
+    ouchi:      { ...ALL, hint: 'Let your eyes wander or scroll around: the letters slide on their own layer.' },
+    stillmove:  { ...ALL, foil: 0,
+                  hint: 'Nothing is actually moving. Look around the picture rather than at one spot and it seems to creep. Works in a saved PNG or a print too.' },
+    afterimage: { palette: 1, amount: ['Stare (s)', 10, 40, 1, 20],
+                  hint: 'Hide this panel, then stare at the dot without moving your eyes. When the screen turns white, keep looking at the dot: the words come back in the opposite colours.' },
+  };
+  const amounts = {};
+  for (const k in FX) if (FX[k].amount) amounts[k] = FX[k].amount[4];
 
-  let W = 0, H = 0, dpr = 1, maskData = null, img = null, dirty = true;
-  let phase = 0, breath = 0, lastT = 0, rec = null;
+  // ---- Small helpers ----
+  const mod = (a, m) => ((a % m) + m) % m;
+  const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+  const LE = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+  // One pixel as a 32-bit value in ImageData byte order.
+  const pack = ([r, g, b]) => (LE ? (255 << 24 | b << 16 | g << 8 | r) : (r << 24 | g << 16 | b << 8 | 255)) >>> 0;
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const css = ([r, g, b]) => `rgb(${r},${g},${b})`;
+  function hsl(h, s, l) {
+    const a = s * Math.min(l, 1 - l);
+    const f = n => { const k = (n + h * 12) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+    return [f(0), f(8), f(4)].map(v => Math.round(v * 255));
+  }
+  const hash2 = (a, b) => {
+    let h = (Math.imul(a, 374761393) + Math.imul(b, 668265263)) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  const SIN = new Float32Array(4096);                 // sine table for the liquid warp
+  for (let i = 0; i < 4096; i++) SIN[i] = Math.sin(i / 4096 * TAU);
+  const FOIL = new Uint32Array(256);                  // rainbow for the foil sheen
+  for (let i = 0; i < 256; i++) FOIL[i] = pack(hsl(i / 256, 1, 0.55));
+
+  // ---- State ----
+  let W = 0, H = 0, dpr = 1, maskData = null, img = null, d32 = null, dirty = true;
+  let polar = null, kal = null, dist = null;          // lookup tables, rebuilt on demand
+  const clock = { phase: 0, breath: 0, liquid: 0, sheen: 0, sway: 0 };
+  let lastT = 0, rec = null, pulseNow = 0, afterStart = 0, afterT = 0, beatOrigin = 0;
+  const tilt = { x: 0, y: 0, tx: 0, ty: 0, lastInput: -1e9, gyro: false, g0: null, b0: null, asked: false };
+  let audio = null, micLevel = 0, micMsg = '';
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     // The artwork is always a square: the largest one that fits the window.
     const side = Math.min(innerWidth, innerHeight);
     canvas.style.width = canvas.style.height = side + 'px';
-    W = H = Math.round(side * dpr);
+    W = H = Math.max(1, Math.round(side * dpr));
     canvas.width = mask.width = W;
     canvas.height = mask.height = H;
     img = ctx.createImageData(W, H);
+    d32 = new Uint32Array(img.data.buffer);
+    polar = kal = dist = null;
     buildMask();
   }
 
@@ -146,19 +291,21 @@ window.addEventListener('error', e => {
 
   // Render the text as a hard-edged white-on-black mask, as large as fits.
   function buildMask() {
+    dist = null;
+    dirty = true;
     mctx.setTransform(1, 0, 0, 1, 0, 0);
     mctx.clearRect(0, 0, W, H);
-    const raw = textEl.value.trim().replace(/\s+/g, ' ');
-    if (!raw) { maskData = null; dirty = true; return; }
+    const raw = ui.text.value.trim().replace(/\s+/g, ' ');
+    if (!raw) { maskData = null; return; }
 
     const words = raw.split(' ');
     mctx.font = `${REF}px ${FONT}`;
     const widths = words.map(w => mctx.measureText(w).width);
     const space = mctx.measureText(' ').width;
 
-    const pad = Math.min(W, H) * (+marginEl.value / 100);
+    const pad = Math.min(W, H) * (+ui.margin.value / 100);
     const aw = W - pad * 2, ah = H - pad * 2;
-    const stretch = fitEl.value === 'stretch';
+    const stretch = ui.fit.value === 'stretch';
 
     // Tight ink box of a line of text at REF size.
     const inkBox = text => {
@@ -215,181 +362,640 @@ window.addEventListener('error', e => {
     const a = mctx.getImageData(0, 0, W, H).data;
     maskData = new Uint8Array(W * H);
     for (let p = 0, q = 3; p < maskData.length; p++, q += 4) maskData[p] = a[q] > 127 ? 1 : 0;
-    dirty = true;
   }
 
-  const mod = (a, m) => ((a % m) + m) % m;
-  // Odd width when not breathing, so a stripe is centred exactly on the square's
-  // centre and the pattern is point-symmetric (identical when rotated 180°).
-  const stripeWidth = w => breatheEl.checked ? Math.max(1.5, w) : 2 * Math.floor(Math.max(1, w) / 2) + 1;
+  // ---- Lookup tables ----
+  // Distance and angle of every pixel from the centre (spiral, tunnel, kaleidoscope).
+  function getPolar() {
+    if (polar) return polar;
+    const n = W * H, r = new Float32Array(n), th = new Float32Array(n), c = W / 2 - 0.5;
+    for (let y = 0, p = 0; y < H; y++)
+      for (let x = 0; x < W; x++, p++) {
+        const dx = x - c, dy = y - c;
+        r[p] = Math.sqrt(dx * dx + dy * dy);
+        th[p] = Math.atan2(dy, dx);
+      }
+    return polar = { r, th };
+  }
 
-  // Every pixel is set to exactly one of the palette colours: no antialiasing.
+  // Kaleidoscope: where each pixel folds to, for N-way mirror symmetry about the centre.
+  function getKal(n) {
+    if (kal && kal.n === n) return kal;
+    const { r, th } = getPolar(), c = W / 2 - 0.5;
+    const sector = TAU / n, half = sector / 2, th0 = -Math.PI / 2;
+    const kx = new Int16Array(W * H), ky = new Int16Array(W * H);
+    for (let p = 0; p < W * H; p++) {
+      let a = mod(th[p] - th0, sector);
+      if (a > half) a = sector - a;
+      kx[p] = Math.round(c + r[p] * Math.cos(th0 + a));
+      ky[p] = Math.round(c + r[p] * Math.sin(th0 + a));
+    }
+    return kal = { n, kx, ky, sector, half, th0 };
+  }
+
+  // Exact Euclidean distance transform (Felzenszwalb & Huttenlocher), in place on
+  // squared distances: 0 at feature cells, INF elsewhere.
+  const INF = 1e20;
+  function edt1d(grid, offset, stride, length, f, v, z) {
+    v[0] = 0; z[0] = -INF; z[1] = INF; f[0] = grid[offset];
+    for (let q = 1, k = 0, s = 0; q < length; q++) {
+      f[q] = grid[offset + q * stride];
+      const q2 = q * q;
+      do { const r = v[k]; s = (f[q] - f[r] + q2 - r * r) / (q - r) / 2; } while (s <= z[k] && --k > -1);
+      k++; v[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    for (let q = 0, k = 0; q < length; q++) {
+      while (z[k + 1] < q) k++;
+      const r = v[k], qr = q - r;
+      grid[offset + q * stride] = f[r] + qr * qr;
+    }
+  }
+  function edt(grid, w, h) {
+    const n = Math.max(w, h), f = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+    for (let x = 0; x < w; x++) edt1d(grid, x, w, h, f, v, z);
+    for (let y = 0; y < h; y++) edt1d(grid, y * w, 1, w, f, v, z);
+    for (let i = 0; i < w * h; i++) grid[i] = Math.sqrt(grid[i]);
+  }
+
+  // Distance from the letters (outside) and from the letter edges (inside), on a grid
+  // that is half resolution on big screens and padded so warped lookups stay inside.
+  function getDist() {
+    if (dist) return dist;
+    const g = W > 1100 ? 2 : 1, off = g >> 1, pad = Math.ceil(W * 0.07 / g);
+    const iw = Math.ceil(W / g), ih = Math.ceil(H / g), gw = iw + 2 * pad, gh = ih + 2 * pad;
+    const out = new Float32Array(gw * gh).fill(INF), inn = new Float32Array(gw * gh);
+    for (let gy = 0; gy < ih; gy++) {
+      const y = Math.min(H - 1, gy * g + off);
+      for (let gx = 0; gx < iw; gx++) {
+        if (!maskData[y * W + Math.min(W - 1, gx * g + off)]) continue;
+        const k = (gy + pad) * gw + gx + pad;
+        out[k] = 0; inn[k] = INF;
+      }
+    }
+    edt(out, gw, gh);
+    edt(inn, gw, gh);
+    let rMax = 0;
+    for (let i = 0; i < inn.length; i++) if (inn[i] > rMax) rMax = inn[i];
+    return dist = { g, off, pad, gw, gh, out, inn, rMax: rMax * g };
+  }
+  // Bilinear lookup in a distance grid, in device pixels.
+  function sampleD(arr, D, x, y) {
+    let u = (x - D.off) / D.g + D.pad, v = (y - D.off) / D.g + D.pad;
+    u = clamp(u, 0, D.gw - 1.001); v = clamp(v, 0, D.gh - 1.001);
+    const i = u | 0, j = v | 0, fu = u - i, fv = v - j, k = j * D.gw + i;
+    const a = arr[k] + (arr[k + 1] - arr[k]) * fu;
+    const b = arr[k + D.gw] + (arr[k + D.gw + 1] - arr[k + D.gw]) * fu;
+    return (a + (b - a) * fv) * D.g;
+  }
+
+  // ---- Stripe widths ----
+  // Odd width when nothing animates the width, so a stripe is centred exactly on the
+  // square's centre and the pattern is point-symmetric (identical when rotated 180°).
+  const animatedWidth = () => ui.breathe.checked || ui.pulse.value !== 'off';
+  const stripeWidth = w => animatedWidth() ? Math.max(1.5, w) : 2 * Math.floor(Math.max(1, w) / 2) + 1;
+  const widthMul = (breath, pulse) =>
+    (ui.breathe.checked ? 1 + 0.45 * Math.sin(breath) : 1) * (1 + 0.5 * +ui.pulseamt.value * pulse);
+  function widths(mul) {
+    const f = FX[ui.effect.value] || FX.cross;
+    const sb = stripeWidth(+ui.stripe.value * dpr * mul);
+    const sf = f.fgscale ? stripeWidth(+ui.stripe.value * dpr * mul * +ui.fgscale.value) : sb;
+    return { sb, sf };
+  }
+  const texGrain = () => Math.max(2, Math.round(+ui.stripe.value * dpr * 0.4));  // Magic Eye dot size
+
+  // ---- Drawing ----
+  // Every pixel is set to exactly one palette colour: no antialiasing.
   function paint() {
-    const effect = effectEl.value;
-    const breatheK = breatheEl.checked ? 1 + 0.45 * Math.sin(breath) : 1;
-    const sb = stripeWidth(+stripeEl.value * dpr * breatheK);                  // background stripe
-    const sf = stripeWidth(+stripeEl.value * dpr * breatheK * +fgscaleEl.value); // letter stripe
-    const pb = sb * 2, pf = sf * 2, hb = sb / 2 - 0.5, hf = sf / 2 - 0.5;
-    let ph = phase * dpr, phB = ph;
-    // Reveal: background holds still and only the letters' stripes move;
-    // when paused the letters snap back into the background and vanish.
-    if (effect === 'reveal') { phB = 0; if (!driftEl.checked) ph = 0; }
-    const onB = t => mod(t + hb, pb) < sb;
-    const onF = t => mod(t + hf, pf) < sf;
-    const cx = W / 2 - 0.5;
+    dirty = false;
+    const e = ui.effect.value, f = FX[e] || FX.cross;
+    if (e === 'afterimage') return paintAfterimage();
+    const mk = maskData;
+    const pal = PALETTES[ui.palette.value] || PALETTES.bw;
+    const drift = !!f.motion && ui.drift.checked;
+    const ph = clock.phase * dpr;
+    if (e === 'magiceye') return paintMagicEye(pal, ph);
 
-    // Pattern value (true = "on" colour) for each region at pixel (x, y).
-    let bgAt, fgAt;
-    if (effect === 'ouchi') {
-      // Bricks 4:1, horizontal behind, vertical in the letters.
-      bgAt = (x, y) => ((Math.floor((x - cx - phB) / (2 * pb)) + Math.floor((y - cx) / sb)) & 1) === 0;
-      fgAt = (x, y) => ((Math.floor((x - cx) / sf) + Math.floor((y - cx + ph) / (2 * pf))) & 1) === 0;
-    } else {
-      bgAt = (x, y) => onB(x + y - 2 * cx - phB);
-      fgAt = effect === 'invert' ? (x, y) => !onF(x + y - 2 * cx + ph)
-           : effect === 'reveal' ? (x, y) => onF(x + y - 2 * cx - ph)
-           : (x, y) => onF(x - y - ph);
+    const { sb, sf } = widths(widthMul(clock.breath, pulseNow));
+    const pb = 2 * sb, pf = 2 * sf, hb = sb / 2 - 0.5, hf = sf / 2 - 0.5;
+    // Background / letter stripe at position t: 1 = "on" colour, 0 = "off".
+    const onB = t => { let r = (t + hb) % pb; if (r < 0) r += pb; return r < sb ? 1 : 0; };
+    const onF = t => { let r = (t + hf) % pf; if (r < 0) r += pf; return r < sf ? 1 : 0; };
+    const c = W / 2 - 0.5, c2 = 2 * c;
+    const popMul = 1 + +ui.pulseamt.value * pulseNow * 0.8;
+    const popPx = Math.round(+ui.pop.value / 100 * W * popMul);
+    // The background holds still in effects where only the letters move.
+    const phB = (e === 'reveal' || e === 'spin' || e === 'moire') ? 0 : ph;
+
+    // Each effect's patterns, as functions of position: (X, Y), or (r, θ) about the
+    // centre for the polar ones. They return 0/1, or 0-3 for the four-tone effect.
+    const diag = (X, Y) => onB(X + Y - c2 - phB);       // +45°
+    const cross = (X, Y) => onF(X - Y - ph);              // −45°
+    let bgPat = diag, fgPat = cross, polarB = false, polarF = false, fgLikeBg = false, levels = 2;
+    switch (e) {
+      case 'invert':
+        fgPat = (X, Y) => 1 - onF(X + Y - c2 + ph);
+        break;
+      case 'reveal': {
+        // Same stripes as the background; paused, the letters vanish into it.
+        const pr = drift ? ph : 0;
+        fgLikeBg = true;
+        fgPat = (X, Y) => onF(X + Y - c2 - pr);
+        break;
+      }
+      case 'moire': {
+        // Letters show two nearly parallel gratings on top of each other.
+        const beta = Math.PI / 4 + amounts.moire * Math.PI / 180;
+        const cb = Math.cos(beta) * S2, sn = Math.sin(beta) * S2;
+        fgPat = (X, Y) => onB(X + Y - c2) ^ onB((X - c) * cb + (Y - c) * sn - ph);
+        break;
+      }
+      case 'spin': {
+        const a = -Math.PI / 4 + TAU * ph / (SPIN * dpr);
+        const ca = Math.cos(a) * S2, sa = Math.sin(a) * S2;
+        fgPat = (X, Y) => onF((X - c) * ca + (Y - c) * sa);
+        break;
+      }
+      case 'spiral': {
+        // Background: a hypnotic spiral winding outward. Letters: a counter-swirl that
+        // crosses it at 45° everywhere (a logarithmic spiral), turning the other way.
+        const aB = Math.round(amounts.spiral) * pb / TAU;
+        const aF = Math.max(8, Math.round(TAU * (W / 4) / pf)) * pf / TAU;
+        polarB = polarF = true;
+        bgPat = (r, th) => onB(S2 * r + aB * th - phB);
+        fgPat = (r, th) => onF(aF * (Math.log(r + 2) - th) + ph);
+        break;
+      }
+      case 'tunnel': {
+        // Rings spaced like a tunnel in perspective, flowing outward; the letters get spokes.
+        const R = W / 2, r0 = W * 0.08, kt = (R / 1.5) / Math.log(1 + R / r0);
+        const aF = Math.round(amounts.tunnel) * pf / TAU;
+        polarB = polarF = true;
+        bgPat = r => onB(kt * Math.log(1 + r / r0) - phB);
+        fgPat = (r, th) => onF(aF * th + ph);
+        break;
+      }
+      case 'outlines': {
+        const D = mk ? getDist() : null;
+        if (D) bgPat = (X, Y) => onB(S2 * sampleD(D.out, D, X, Y) - phB);
+        break;
+      }
+      case 'inflate': {
+        // Letters are raised like tubes; the stripes are pushed along by the height,
+        // which is read at the letter's own (unwarped) position x, y.
+        const D = mk ? getDist() : null;
+        if (D) {
+          const k = amounts.inflate, R2 = 2 * D.rMax;
+          fgLikeBg = true;
+          fgPat = (X, Y, x, y) => {
+            const d = sampleD(D.inn, D, x, y);
+            return onB(X + Y - c2 - phB + k * Math.sqrt(Math.max(0, d * (R2 - d))));
+          };
+        }
+        break;
+      }
+      case 'ouchi':
+        // Bricks 4:1, horizontal behind, vertical in the letters.
+        bgPat = (X, Y) => (Math.floor((X - c - phB) / (2 * pb)) + Math.floor((Y - c) / sb)) & 1 ? 0 : 1;
+        fgPat = (X, Y) => (Math.floor((X - c) / sf) + Math.floor((Y - c + ph) / (2 * pf))) & 1 ? 0 : 1;
+        break;
+      case 'stillmove': {
+        // Black → dark → white → light, repeated: a sawtooth that the eye reads as motion.
+        // The letters run the sequence the other way round.
+        levels = 4;
+        const qb = 4 * sb, qf = 4 * sf, REV = [0, 3, 2, 1];
+        bgPat = (X, Y) => Math.floor(mod(X + Y - c2 - phB, qb) / sb) & 3;
+        fgPat = (X, Y) => REV[Math.floor(mod(X - Y - ph, qf) / sf) & 3];
+        break;
+      }
     }
 
-    const d = img.data, mk = maskData;
-    const pop = Math.round(+popEl.value / 100 * W);
-    let o = 0, p = 0;
+    // Kaleidoscope and liquid, wrapped around the patterns only when switched on.
+    // Letters are folded like the background, which keeps them crossing it at the same
+    // angle everywhere (so they stay readable), and ripple out of step with it.
+    const liqA = f.liquid ? +ui.liquid.value * 0.005 * W : 0;
+    const liqK = 4096 / (W / 2.2), L = clock.liquid * 4096 / TAU;
+    const kalN = f.kaleido ? +ui.kaleido.value : 0;
+    const K = kalN ? getKal(kalN) : null;
+    const P = polarB || polarF ? getPolar() : null;
+    const foldTh = th => { let a = mod(th - K.th0, K.sector); if (a > K.half) a = K.sector - a; return K.th0 + a; };
+    // (x, y) = pixel position in this layer, i = its index in the lookup tables.
+    const wrap = (pat, polar, w1, w2) => {
+      if (!liqA) {
+        if (polar) return K ? (x, y, i) => pat(P.r[i], foldTh(P.th[i])) : (x, y, i) => pat(P.r[i], P.th[i]);
+        return K ? (x, y, i) => pat(K.kx[i], K.ky[i], x, y) : (x, y) => pat(x, y, x, y);
+      }
+      return (x, y, i) => {
+        let X = x, Y = y;
+        if (K) { X = K.kx[i]; Y = K.ky[i]; }
+        const X0 = X;
+        X += liqA * SIN[((Y * liqK + w1) | 0) & 4095];
+        Y += liqA * SIN[((X0 * liqK + w2) | 0) & 4095];
+        if (!polar) return pat(X, Y, x, y);
+        const dx = X - c, dy = Y - c;
+        return pat(Math.sqrt(dx * dx + dy * dy), Math.atan2(dy, dx));
+      };
+    };
+    const bgAt = wrap(bgPat, polarB, L, 2 * L + 1400);
+    const fgAt = fgLikeBg ? wrap(fgPat, polarF, L, 2 * L + 1400) : wrap(fgPat, polarF, 2048 - L, 3400 - 2 * L);
 
-    if (effect === 'anaglyph') {
+    let p = 0;
+    if (e === 'anaglyph') {
       // Red channel = left eye, cyan = right eye. The letters (with their own
       // stripes) are shifted in opposite directions for each eye, so through
       // red/cyan glasses they sit in front of the screen.
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++, p++, o += 4) {
-          const xl = x - pop, xr = x + pop;
-          const inL = mk && xl >= 0 && mk[p - pop];
-          const inR = mk && xr < W && mk[p + pop];
-          const l = inL ? onF(xl - y) : bgAt(x, y);
-          const r = inR ? onF(xr - y) : bgAt(x, y);
-          d[o] = l ? 255 : 0; d[o + 1] = d[o + 2] = r ? 255 : 0; d[o + 3] = 255;
+      const ANA = [[0, 0, 0], [0, 255, 255], [255, 0, 0], [255, 255, 255]].map(pack);
+      for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++, p++) {
+          const b = bgAt(x, y, p), xl = x - popPx, xr = x + popPx;
+          const l = mk && xl >= 0 && mk[p - popPx] ? onF(xl - y) : b;
+          const r = mk && xr < W && mk[p + popPx] ? onF(xr - y) : b;
+          d32[p] = ANA[l * 2 + r];
         }
-      }
+      ctx.putImageData(img, 0, 0);
+      return;
+    }
+
+    let bgC, fgC;
+    if (levels === 4) {
+      const tones = ([on, off]) => [off, mix(off, on, 0.3), on, mix(off, on, 0.72)].map(pack);
+      bgC = tones(pal.bg); fgC = tones(pal.fg);
     } else {
-      const pal = PALETTES[paletteEl.value] || PALETTES.bw;
-      const [bOn, bOff] = pal.bg, [fOn, fOff] = pal.fg;
-      const shadow = shadowEl.checked && mk && pop > 0 && effect !== 'reveal';
-      const sh = pop * W + pop; // mask index offset for a shadow cast down-right
-      for (let y = 0; y < H; y++) {
-        for (let x = 0; x < W; x++, p++, o += 4) {
-          let c;
-          if (mk && mk[p]) c = fgAt(x, y) ? fOn : fOff;
-          else if (shadow && x >= pop && y >= pop && mk[p - sh]) c = bgAt(x, y) ? bOff : bOn; // inverted
-          else c = bgAt(x, y) ? bOn : bOff;
-          d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+      bgC = [pack(pal.bg[1]), pack(pal.bg[0])]; fgC = [pack(pal.fg[1]), pack(pal.fg[0])];
+    }
+    const inv = levels === 4 ? v => (v + 2) & 3 : v => 1 - v;
+    // Hologram tilt moves the letter layer; the background and shadow stay put.
+    const tiltOn = f.tilt && ui.tilt.checked;
+    const tdepth = tiltOn ? +ui.tiltdepth.value / 100 * W * popMul : 0;
+    const ox = Math.round(tilt.x * tdepth), oy = Math.round(tilt.y * tdepth);
+    const shadowOn = f.shadow && ui.shadow.checked && mk && popPx > 0;
+    const foilOn = f.foil && ui.foil.checked && levels === 2;
+    const foilK = 256 / (W * 0.9), foilP = clock.sheen * 256 / TAU + (tiltOn ? tilt.x * 90 + tilt.y * 60 : 0);
+
+    for (let y = 0; y < H; y++) {
+      const ly = y - oy, lrow = ly * W, letterRow = mk && ly >= 0 && ly < H;
+      const sy = y - popPx, srow = sy * W, shadowRow = shadowOn && sy >= 0;
+      for (let x = 0; x < W; x++, p++) {
+        const lx = x - ox;
+        if (letterRow && lx >= 0 && lx < W && mk[lrow + lx]) {
+          const v = fgAt(lx, ly, lrow + lx);
+          d32[p] = foilOn && v === 1 ? FOIL[(((x + y) * foilK + foilP) | 0) & 255] : fgC[v];
+        } else {
+          const v = bgAt(x, y, p), sx = x - popPx;
+          d32[p] = shadowRow && sx >= 0 && mk[srow + sx] ? bgC[inv(v)] : bgC[v];   // shadow: inverted
         }
       }
     }
     ctx.putImageData(img, 0, 0);
-    dirty = false;
+  }
+
+  // Magic Eye (single-image random-dot stereogram, after Thimbleby, Inglis & Witten).
+  // Pixels that each eye should see as the same point on the 3D surface are linked
+  // and given the same colour; letters sit on a nearer plane than the background.
+  function paintMagicEye(pal, ph) {
+    const mk = maskData, cOn = pack(pal.bg[0]), cOff = pack(pal.bg[1]);
+    const mu = amounts.magiceye / 10;                           // depth of field
+    const far = Math.max(8, Math.round(Math.min(110 * dpr, W / 7)));   // repeat width, background
+    const E = 2 * far;
+    const sep = z => Math.round((1 - mu * z) * E / (2 - mu * z));
+    const sFar = sep(0), sNear = sep(1);
+    const reach = Math.ceil(mu * E / 4);   // a background point this close to a letter is hidden from one eye
+    const grain = texGrain(), shift = Math.round(ph);
+    const same = new Int32Array(W), pix = new Uint8Array(W), next = new Int32Array(W);
+    for (let y = 0; y < H; y++) {
+      const row = y * W;
+      let nx = 1e9;
+      for (let x = W - 1; x >= 0; x--) { if (mk && mk[row + x]) nx = x; next[x] = nx; }
+      for (let x = 0; x < W; x++) same[x] = x;
+      let prev = -1e9;
+      for (let x = 0; x < W; x++) {
+        const z = mk && mk[row + x] ? 1 : 0;
+        if (z) prev = x;
+        const s = z ? sNear : sFar;
+        let left = x - (s >> 1), right = left + s;
+        if (left < 0 || right >= W) continue;
+        if (!z && (x - prev <= reach || next[x] - x <= reach)) continue;
+        for (let k = same[left]; k !== left && k !== right; k = same[left]) {
+          if (k < right) left = k; else { left = right; right = k; }
+        }
+        same[left] = right;
+      }
+      const cy = Math.floor(y / grain);
+      for (let x = W - 1; x >= 0; x--) {
+        // Free pixels take the dot texture, which repeats every 64 dots so drifting loops.
+        pix[x] = same[x] === x ? (hash2(mod(Math.floor((x + shift) / grain), 64), cy) < 0.5 ? 1 : 0) : pix[same[x]];
+        d32[row + x] = pix[x] ? cOn : cOff;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    // Two guide dots, one background-repeat apart: relax your eyes until they make three.
+    const r = Math.max(4 * dpr, W * 0.009), y = Math.max(r * 3, H * 0.045);
+    for (const x of [W / 2 - sFar / 2, W / 2 + sFar / 2]) {
+      ctx.fillStyle = css(pal.bg[1]);
+      ctx.beginPath(); ctx.arc(x, y, r * 2.2, 0, TAU); ctx.fill();
+      ctx.fillStyle = css(pal.bg[0]);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    }
+  }
+
+  // Afterimage: saturated words to stare at, then a blank screen where your own eyes
+  // paint them back in the opposite colours.
+  function paintAfterimage() {
+    const stare = amounts.afterimage, t = afterT, mk = maskData;
+    const pal = PALETTES[ui.palette.value] || PALETTES.bw;
+    const cx = W / 2, cy = H / 2, r = Math.max(3 * dpr, W * 0.007);
+    if (t < stare) {
+      const A = pack(pal.fg[0]), B = pack(ui.palette.value === 'bw' ? [0, 0, 0] : pal.bg[0]);
+      if (mk) for (let p = 0; p < W * H; p++) d32[p] = mk[p] ? A : B; else d32.fill(B);
+      ctx.putImageData(img, 0, 0);
+      // Fixation dot, with a ring counting down the stare.
+      const a0 = -Math.PI / 2, a1 = a0 + TAU * (1 - t / stare);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(4, r * 0.9);
+      ctx.beginPath(); ctx.arc(cx, cy, r * 3, a0, a1); ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, r * 0.45);
+      ctx.beginPath(); ctx.arc(cx, cy, r * 3, a0, a1); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(1.5, r * 0.4);
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.7, 0, TAU); ctx.fill();
+    }
+  }
+
+  // ---- Motion ----
+  const bpm = () => clamp(Math.round(+ui.bpm.value || 120), 40, 180);
+  const beatPulse = phase01 => Math.exp(-4 * phase01);     // sharp hit on the beat, then decays
+
+  // Microphone: follow the bass, with a smooth attack and slower release so the
+  // pulse throbs with the music but can't strobe.
+  async function startMic() {
+    if (audio) { audio.ctx.resume(); return; }
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('not supported here');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (ui.pulse.value !== 'mic' || audio) { stream.getTracks().forEach(t => t.stop()); return; }   // changed meanwhile
+      const actx = new (window.AudioContext || window.webkitAudioContext)();
+      const an = actx.createAnalyser();
+      an.fftSize = 1024; an.smoothingTimeConstant = 0.5;
+      actx.createMediaStreamSource(stream).connect(an);
+      if (actx.state === 'suspended') await actx.resume().catch(() => {});
+      audio = { ctx: actx, an, stream, buf: new Uint8Array(an.frequencyBinCount), env: 0, peak: 0.05 };
+      micMsg = '';
+    } catch (err) {
+      micMsg = `Couldn't use the microphone (${err.name || err.message}). Check the browser's permission, or pulse to a BPM instead.`;
+    }
+    updateHint();
+  }
+  function stopMic() {
+    if (!audio) return;
+    audio.stream.getTracks().forEach(t => t.stop());
+    audio.ctx.close();
+    audio = null; micLevel = 0;
+  }
+  function updateMic(dt) {
+    if (!audio) return;
+    const { an, buf } = audio;
+    an.getByteFrequencyData(buf);
+    const bins = Math.max(2, Math.round(160 / (audio.ctx.sampleRate / an.fftSize)));   // up to ~160 Hz
+    let s = 0;
+    for (let i = 1; i <= bins; i++) s += buf[i];
+    const level = s / bins / 255;
+    audio.peak = Math.max(level, audio.peak * Math.pow(0.5, dt / 4));               // slow auto-gain
+    const target = clamp((level / Math.max(audio.peak, 0.05) - 0.35) / 0.65, 0, 1);  // ignore quiet sounds
+    const k = 1 - Math.exp(-dt / (target > audio.env ? 0.06 : 0.3));
+    audio.env += (target - audio.env) * k;
+    micLevel = audio.env;
   }
 
   function loop(t) {
     const dt = lastT ? Math.min(t - lastT, 100) / 1000 : 0;
     lastT = t;
+    const e = ui.effect.value, f = FX[e] || FX.cross, sp = +ui.speed.value;
+    if (f.motion && ui.pulse.value === 'mic') updateMic(dt);
     if (rec) {
-      // While recording, motion is driven by the clock so the last frame
-      // lines up exactly with the first and the video loops seamlessly.
       // Frame i shows exactly i/N of the loop; after frame N-1 comes frame 0 again.
       if (rec.t0 !== null) {
         const i = Math.floor((t - rec.t0) / 1000 * rec.fps);
         if (i >= rec.N) finishRecording();
         else if (i !== rec.i) {
           rec.i = i;
-          const u = i / rec.N;
-          if (rec.drift) phase = rec.phase0 + rec.dist * u;
-          if (rec.breathe) breath = rec.breath0 + 2 * Math.PI * rec.k * u;
+          setRecordingFrame(i / rec.N);
           paint();
-          rec.track.requestFrame ? rec.track.requestFrame() : rec.stream.requestFrame && rec.stream.requestFrame();
+          rec.track.requestFrame && rec.track.requestFrame();
         }
       }
     } else {
-      if (driftEl.checked) { phase += dt * 30 * +speedEl.value; dirty = true; }
-      if (breatheEl.checked) { breath += dt * 1.6 * +speedEl.value; dirty = true; }
+      if (f.motion && ui.drift.checked) {
+        clock.phase += dt * 30 * sp; clock.liquid += dt * 0.9 * sp; clock.sheen += dt * 0.5 * sp;
+        dirty = true;
+      }
+      if (f.motion && ui.breathe.checked) { clock.breath += dt * 1.6 * sp; dirty = true; }
+      const pulse = !f.motion ? 0 : ui.pulse.value === 'bpm' ? beatPulse(mod((t - beatOrigin) / 1000 * bpm() / 60, 1))
+                  : ui.pulse.value === 'mic' ? micLevel : 0;
+      if (pulse !== pulseNow) { pulseNow = pulse; dirty = true; }
+      if (f.tilt && ui.tilt.checked) {
+        // No mouse or gyro input for a while: sway gently on its own.
+        if (t - tilt.lastInput > 2500) { clock.sway += dt * 1.05; tilt.tx = Math.sin(clock.sway); tilt.ty = 0.45 * Math.sin(2 * clock.sway); }
+        const k = Math.min(1, dt * 8);
+        const nx = tilt.x + (tilt.tx - tilt.x) * k, ny = tilt.y + (tilt.ty - tilt.y) * k;
+        if (Math.abs(nx - tilt.x) + Math.abs(ny - tilt.y) > 1e-4) { tilt.x = nx; tilt.y = ny; dirty = true; }
+      }
+      if (e === 'afterimage') { afterT = mod((t - afterStart) / 1000, amounts.afterimage + BLANK); dirty = true; }
+      if (dirty) paint();
     }
-    if (dirty) paint();
     requestAnimationFrame(loop);
   }
 
-  // Grey out controls that don't apply to the chosen effect.
+  // ---- UI ----
+  const enable = (el, on) => {
+    el.disabled = !on;
+    const wrap = el.closest('label, .grp');
+    if (wrap) wrap.classList.toggle('off', !on);
+  };
   function syncControls() {
-    const e = effectEl.value;
-    paletteEl.disabled = e === 'anaglyph';
-    shadowEl.disabled = e === 'anaglyph' || e === 'reveal';
-    shadowEl.parentElement.classList.toggle('off', shadowEl.disabled);
-    if (e === 'reveal' && !driftEl.checked) driftEl.checked = true; // invisible when still
-    $('hint').textContent =
-      e === 'reveal'   ? 'The words only exist while they move. Untick Drift and they vanish.' :
-      e === 'ouchi'    ? 'Let your eyes wander or scroll around: the letters slide on their own layer.' :
-      e === 'anaglyph' ? 'Wear red/cyan glasses (red on the left eye). Pop sets the depth.' :
-      paletteEl.value === 'redblue' || paletteEl.value === 'bluered'
-                       ? 'Best in a dim room: red looks nearer than blue for most people.' :
-                         'Tap the artwork or press H to show/hide this panel';
+    const e = ui.effect.value, f = FX[e] || FX.cross;
+    ui.amountWrap.hidden = !f.amount;
+    if (f.amount) {
+      const [label, min, max, step] = f.amount;
+      ui.amountName.textContent = label;
+      ui.amount.min = min; ui.amount.max = max; ui.amount.step = step;
+      ui.amount.value = amounts[e];
+    }
+    enable(ui.stripe, f.stripe); enable(ui.fgscale, f.fgscale); enable(ui.liquid, f.liquid);
+    enable(ui.kaleido, f.kaleido); enable(ui.palette, f.palette); enable(ui.foil, f.foil);
+    enable(ui.shadow, f.shadow); enable(ui.pop, f.shadow || e === 'anaglyph');
+    enable(ui.tilt, f.tilt); enable(ui.tiltdepth, f.tilt);
+    for (const el of [ui.drift, ui.speed, ui.breathe, ui.pulse, ui.bpm, ui.tap, ui.pulseamt]) enable(el, f.motion);
+    ui.bpmWrap.hidden = ui.pulse.value !== 'bpm';
+    if (e === 'reveal' && !ui.drift.checked) ui.drift.checked = true;   // invisible when still
+    updateHint();
     dirty = true;
   }
+  function updateHint() {
+    const e = ui.effect.value, f = FX[e] || FX.cross, parts = [];
+    if (f.hint) parts.push(f.hint);
+    if (f.palette && e !== 'afterimage' && /^(redblue|bluered)$/.test(ui.palette.value))
+      parts.push('Red looks nearer than blue to most people; best in a dim room.');
+    if (f.tilt && ui.tilt.checked) parts.push(tilt.gyro ? 'Tilt your phone.' : 'Move the mouse, or tilt your phone.');
+    if (f.motion && ui.pulse.value === 'mic')
+      parts.push(micMsg || (audio ? 'Listening: play some music.' : 'Tap the artwork to start the microphone.'));
+    if (!parts.length) parts.push('Tap the artwork or press H to show/hide this panel.');
+    ui.hint.textContent = parts.join(' ');
+  }
 
-  textEl.addEventListener('input', buildMask);
-  for (const el of [stripeEl, fgscaleEl, shadowEl, popEl, driftEl, breatheEl]) el.addEventListener('input', () => dirty = true);
-  effectEl.addEventListener('change', syncControls);
-  paletteEl.addEventListener('change', syncControls);
-  fitEl.addEventListener('change', buildMask);
-  marginEl.addEventListener('input', buildMask);
-  addEventListener('resize', resize);
-  addEventListener('keydown', e => {
-    if (e.target === textEl) return;
-    if (e.key === 'h' || e.key === 'H') $('panel').classList.toggle('hidden');
+  const tabs = [...document.querySelectorAll('[data-tab]')], panes = [...document.querySelectorAll('[data-pane]')];
+  for (const tab of tabs) tab.addEventListener('click', () => {
+    for (const t of tabs) t.setAttribute('aria-selected', t === tab);
+    for (const pane of panes) pane.hidden = pane.dataset.pane !== tab.dataset.tab;
   });
-  // Tap-friendly show/hide for phones and tablets.
-  canvas.addEventListener('click', () => $('panel').classList.toggle('hidden'));
-  $('hide').addEventListener('click', () => $('panel').classList.add('hidden'));
-  const baseName = () => (textEl.value.trim() || 'holo').replace(/[^\w-]+/g, '_');
+
+  const redraw = () => { dirty = true; };
+  ui.text.addEventListener('input', buildMask);
+  ui.fit.addEventListener('change', buildMask);
+  ui.margin.addEventListener('input', buildMask);
+  for (const el of [ui.stripe, ui.fgscale, ui.liquid, ui.pop, ui.tiltdepth, ui.pulseamt, ui.speed,
+                    ui.foil, ui.shadow, ui.drift, ui.breathe, ui.kaleido]) {
+    el.addEventListener('input', redraw);
+    el.addEventListener('change', redraw);
+  }
+  ui.effect.addEventListener('change', () => {
+    if (ui.effect.value === 'afterimage') afterStart = performance.now();
+    syncControls();
+  });
+  ui.palette.addEventListener('change', syncControls);
+  ui.amount.addEventListener('input', () => {
+    amounts[ui.effect.value] = +ui.amount.value;
+    if (ui.effect.value === 'afterimage') afterStart = performance.now();
+    dirty = true;
+  });
+  ui.pulse.addEventListener('change', () => {
+    if (ui.pulse.value === 'mic') startMic(); else stopMic();
+    if (ui.pulse.value === 'bpm') beatOrigin = performance.now();
+    syncControls();
+  });
+  ui.bpm.addEventListener('change', () => { ui.bpm.value = bpm(); });
+  let taps = [];
+  ui.tap.addEventListener('click', () => {
+    const now = performance.now();
+    taps = taps.filter(t => now - t < 3000);
+    taps.push(now);
+    if (taps.length >= 2) ui.bpm.value = clamp(Math.round(60000 * (taps.length - 1) / (now - taps[0])), 40, 180);
+    beatOrigin = now;   // the next beats land in time with your taps
+  });
+
+  // Hologram tilt: mouse position on computers, the motion sensor on phones.
+  const onOrient = ev => {
+    if (!ui.tilt.checked || ev.gamma == null || ev.beta == null) return;
+    if (tilt.g0 === null) { tilt.g0 = ev.gamma; tilt.b0 = ev.beta; }   // however you're holding it = level
+    tilt.tx = clamp((ev.gamma - tilt.g0) / 20, -1, 1);
+    tilt.ty = clamp((ev.beta - tilt.b0) / 20, -1, 1);
+    if (!tilt.gyro) { tilt.gyro = true; updateHint(); }
+    tilt.lastInput = performance.now();
+  };
+  function requestGyro() {
+    const D = window.DeviceOrientationEvent;
+    if (tilt.asked || !D) return;
+    tilt.asked = true;
+    if (typeof D.requestPermission === 'function')       // iPhone/iPad: must ask, from a tap
+      D.requestPermission().then(s => { if (s === 'granted') addEventListener('deviceorientation', onOrient); })
+        .catch(() => { tilt.asked = false; });
+    else addEventListener('deviceorientation', onOrient);
+  }
+  ui.tilt.addEventListener('change', () => {
+    if (ui.tilt.checked) { tilt.g0 = null; requestGyro(); }
+    else { tilt.x = tilt.y = tilt.tx = tilt.ty = 0; }
+    syncControls();
+  });
+  addEventListener('pointermove', ev => {
+    if (!ui.tilt.checked || ev.pointerType !== 'mouse' || tilt.gyro) return;
+    const half = Math.min(innerWidth, innerHeight) / 2;
+    tilt.tx = clamp((ev.clientX - innerWidth / 2) / half, -1, 1);
+    tilt.ty = clamp((ev.clientY - innerHeight / 2) / half, -1, 1);
+    tilt.lastInput = performance.now();
+  });
+
+  addEventListener('resize', resize);
+  addEventListener('keydown', ev => {
+    if (ev.target === ui.text || ev.target === ui.bpm) return;
+    if (ev.key === 'h' || ev.key === 'H') ui.panel.classList.toggle('hidden');
+  });
+  // Tap-friendly show/hide for phones and tablets. A tap also unlocks the motion
+  // sensor and microphone, which browsers only allow after a tap.
+  canvas.addEventListener('click', () => {
+    ui.panel.classList.toggle('hidden');
+    if (ui.tilt.checked) requestGyro();
+    if (ui.pulse.value === 'mic' && !audio) startMic();
+  });
+  ui.hide.addEventListener('click', () => ui.panel.classList.add('hidden'));
+
+  // ---- Saving ----
+  const baseName = () => (ui.text.value.trim() || 'holo').replace(/[^\w-]+/g, '_');
   const download = (href, name) => {
     const a = document.createElement('a');
     a.download = name; a.href = href;
     document.body.appendChild(a); a.click(); a.remove();
   };
+  ui.save.addEventListener('click', () => download(canvas.toDataURL('image/png'), baseName() + '.png'));
 
-  // ---- Video: record exactly one loop of the motion ----
-  // Smallest drift distance (device px) after which both stripe patterns repeat.
-  function loopDistance() {
-    const e = effectEl.value;
-    const sb = stripeWidth(+stripeEl.value * dpr), sf = stripeWidth(+stripeEl.value * dpr * +fgscaleEl.value);
-    const k = e === 'ouchi' ? 4 : 2;       // bricks repeat every 2 bricks along their long side
-    const units = e === 'reveal' ? [k * sf] : e === 'anaglyph' ? [k * sb] : [k * sb, k * sf];
-    const maxPx = 30 * dpr * +speedEl.value * 30;   // keep loops under ~30 s
+  // Video: record exactly one loop of the motion.
+  // Drift distance (device px) after which each moving pattern repeats.
+  function loopUnits(e, pulse0) {
+    const { sb, sf } = widths(widthMul(clock.breath, pulse0));
+    const pb = 2 * sb, pf = 2 * sf;
+    switch (e) {
+      case 'reveal': return [pf];
+      case 'ouchi': return [4 * pb, 4 * pf];           // two bricks along the long side
+      case 'stillmove': return [4 * sb, 4 * sf];
+      case 'spin': return [SPIN * dpr];
+      case 'moire': case 'inflate': case 'anaglyph': return [pb];
+      case 'magiceye': return [64 * texGrain()];
+      default: return [pb, pf];                         // cross, invert, spiral, tunnel, outlines
+    }
+  }
+  // Smallest drift distance after which all the patterns repeat together.
+  function loopDistance(e, pulse0) {
+    const units = loopUnits(e, pulse0);
+    const maxPx = 30 * dpr * +ui.speed.value * 30;   // keep loops under ~30 s
     let best = units[0], bestErr = Infinity;
     for (let n = 1; n * units[0] <= Math.max(maxPx, units[0]); n++) {
-      const dist = n * units[0];
-      const err = units.slice(1).reduce((m, u) => Math.max(m, Math.abs(dist / u - Math.round(dist / u)) * u), 0);
-      if (err < 0.5) return dist;            // under half a pixel: invisible seam
-      if (err < bestErr) { bestErr = err; best = dist; }
+      const d = n * units[0];
+      const err = units.slice(1).reduce((m, u) => Math.max(m, Math.abs(d / u - Math.round(d / u)) * u), 0);
+      if (err < 0.5) return d;            // under half a pixel: invisible seam
+      if (err < bestErr) { bestErr = err; best = d; }
     }
     return best;
   }
 
-  const recBtn = $('record');
   function startRecording() {
-    if (!driftEl.checked && !breatheEl.checked) {
-      alert('Nothing is moving yet. Turn on Drift and/or Breathe first, then Save video.');
-      return;
+    const e = ui.effect.value, f = FX[e] || FX.cross, sp = +ui.speed.value;
+    const drift = !!f.motion && ui.drift.checked, breathe = !!f.motion && ui.breathe.checked;
+    const beat = !!f.motion && ui.pulse.value === 'bpm', mic = !!f.motion && ui.pulse.value === 'mic';
+    const liquid = drift && f.liquid && +ui.liquid.value > 0;
+    const sheen = drift && f.foil && ui.foil.checked;
+    const sway = f.tilt && ui.tilt.checked, after = e === 'afterimage';
+    const per = { breath: TAU / (1.6 * sp), liquid: TAU / (0.9 * sp), sheen: TAU / (0.5 * sp), sway: TAU / 1.05, beat: 60 / bpm() };
+    let T, dist = 0;
+    if (after) T = amounts.afterimage + BLANK;
+    else if (drift) {
+      dist = loopDistance(e, beat ? 1 : mic ? micLevel : 0) / dpr;   // CSS px, the unit of clock.phase
+      T = dist / (30 * sp);
+      const reps = Math.max(1, Math.ceil(4 / T));   // at least ~4 s long
+      T *= reps; dist *= reps;
+    } else {
+      const first = [beat && per.beat, breathe && per.breath, sway && per.sway].find(Boolean);
+      if (first) T = first * Math.max(1, Math.ceil(4 / first));
+      else if (mic) T = 8;
+      else {
+        alert('Nothing is moving yet. Turn on Drift, Breathe, Pulse or Hologram tilt first, then Save video.');
+        return;
+      }
     }
     if (!canvas.captureStream || !window.MediaRecorder) {
       alert('This browser can\'t record video. Try Chrome, Edge, Firefox or Safari 14.1+, or use "Save live page".');
       return;
     }
-    const speed = +speedEl.value;
-    let T, dist = 0, k = 0;
-    if (driftEl.checked) {
-      dist = loopDistance() / dpr;             // in CSS px, the unit of `phase`
-      T = dist / (30 * speed);
-    } else T = 2 * Math.PI / (1.6 * speed);
-    const reps = Math.max(1, Math.ceil(4 / T)); // at least ~4 s long
-    T *= reps; dist *= reps;
-    if (breatheEl.checked) k = Math.max(1, Math.round(T / (2 * Math.PI / (1.6 * speed))));
+    const cycles = period => Math.max(1, Math.round(T / period));   // whole cycles, so everything loops
 
     const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
       .find(t => MediaRecorder.isTypeSupported(t)) || '';
@@ -405,33 +1011,51 @@ window.addEventListener('error', e => {
       const url = URL.createObjectURL(new Blob(chunks, { type: mr.mimeType || type }));
       download(url, baseName() + '.' + ext);
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-      recBtn.textContent = 'Save video'; recBtn.disabled = false;
+      ui.record.textContent = 'Save video'; ui.record.disabled = false;
     };
-    rec = { mr, stream, track, fps, N: Math.round(T * fps), i: 0, T, dist, k,
-            drift: driftEl.checked, breathe: breatheEl.checked,
-            phase0: phase, breath0: breath, t0: null };
+    rec = { mr, stream, track, fps, N: Math.round(T * fps), i: 0, T, dist, drift, mic, after,
+            kBreath: breathe ? cycles(per.breath) : 0, kLiquid: liquid ? cycles(per.liquid) : 0,
+            kSheen: sheen ? cycles(per.sheen) : 0, kSway: sway ? cycles(per.sway) : 0,
+            nBeats: beat ? cycles(per.beat) : 0,
+            phase0: clock.phase, breath0: clock.breath, liquid0: clock.liquid, sheen0: clock.sheen, t0: null };
     // Start the clock only once the recorder is actually running, so the
     // first frame of the loop isn't lost to start-up delay.
     mr.onstart = () => { if (rec && rec.t0 === null) rec.t0 = performance.now(); };
     mr.start(250);
     // The recorder needs a first frame before it reports "started": push frame 0.
-    paint(); track.requestFrame && track.requestFrame();
+    setRecordingFrame(0);
+    paint();
+    track.requestFrame && track.requestFrame();
     setTimeout(() => { if (rec && rec.t0 === null) rec.t0 = performance.now(); }, 1000);
-    recBtn.disabled = true;
-    recBtn.textContent = `Recording ${T.toFixed(1)} s…`;
+    ui.record.disabled = true;
+    ui.record.textContent = `Recording ${T.toFixed(1)} s…`;
+  }
+  // Put every moving part where it should be at fraction u of the loop.
+  function setRecordingFrame(u) {
+    const r = rec;
+    if (r.drift) clock.phase = r.phase0 + r.dist * u;
+    if (r.kBreath) clock.breath = r.breath0 + TAU * r.kBreath * u;
+    if (r.kLiquid) clock.liquid = r.liquid0 + TAU * r.kLiquid * u;
+    if (r.kSheen) clock.sheen = r.sheen0 + TAU * r.kSheen * u;
+    if (r.kSway) { const a = TAU * r.kSway * u; tilt.x = Math.sin(a); tilt.y = 0.45 * Math.sin(2 * a); }
+    if (r.nBeats) pulseNow = beatPulse(mod(u * r.nBeats, 1));
+    else if (r.mic) pulseNow = micLevel;
+    if (r.after) afterT = u * r.T;
   }
   function finishRecording() {
-    const r = rec; rec = null;
+    const r = rec;
+    rec = null;
     r.mr.stop();
+    dirty = true;
   }
-  recBtn.addEventListener('click', startRecording);
+  ui.record.addEventListener('click', startRecording);
 
-  // ---- Live page: this page with the current settings baked in ----
-  const SETTINGS = ['text', 'effect', 'palette', 'stripe', 'fgscale', 'shadow', 'pop',
-                    'drift', 'speed', 'breathe', 'fit', 'margin'];
-  $('savepage').addEventListener('click', () => {
-    const preset = {};
-    for (const id of SETTINGS) { const el = $(id); preset[id] = el.type === 'checkbox' ? el.checked : el.value; }
+  // Live page: this page with the current settings baked in.
+  const SETTINGS = ['text', 'effect', 'stripe', 'fgscale', 'liquid', 'kaleido', 'fit', 'margin', 'palette', 'foil',
+                    'drift', 'speed', 'breathe', 'pulse', 'bpm', 'pulseamt', 'shadow', 'pop', 'tilt', 'tiltdepth'];
+  ui.savepage.addEventListener('click', () => {
+    const preset = { amounts };
+    for (const id of SETTINGS) { const el = ui[id]; preset[id] = el.type === 'checkbox' ? el.checked : el.value; }
     const old = document.getElementById('preset'); if (old) old.remove();
     const tag = document.createElement('script');
     tag.id = 'preset';
@@ -449,17 +1073,19 @@ window.addEventListener('error', e => {
   });
   // Apply a baked-in preset (from "Save live page").
   if (window.HOLO_PRESET) {
-    for (const [id, v] of Object.entries(window.HOLO_PRESET)) {
-      const el = $(id); if (!el) continue;
-      if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
+    const pre = window.HOLO_PRESET;
+    for (const id of SETTINGS) {
+      const el = ui[id];
+      if (!el || !(id in pre)) continue;
+      if (el.type === 'checkbox') el.checked = !!pre[id]; else el.value = pre[id];
     }
-    $('panel').classList.add('hidden');
+    if (pre.amounts) for (const k in pre.amounts) if (k in amounts) amounts[k] = +pre.amounts[k];
+    ui.panel.classList.add('hidden');
   }
-
-  $('save').addEventListener('click', () => download(canvas.toDataURL('image/png'), baseName() + '.png'));
 
   // Draw immediately with whatever font is available, then redraw once the
   // web font arrives (it may never arrive offline — that's fine).
+  afterStart = beatOrigin = performance.now();
   resize();
   syncControls();
   requestAnimationFrame(loop);
